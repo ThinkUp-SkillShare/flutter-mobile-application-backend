@@ -1,0 +1,6 @@
+@SkillShareBackend_HostAddress = http://localhost:5118
+
+GET {{SkillShareBackend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
