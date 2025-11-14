@@ -25,11 +25,19 @@ builder.Services.AddCors(options =>
 });
 
 // Add DbContext
+/*
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(
         builder.Configuration.GetConnectionString("DefaultConnection"),
         ServerVersion.AutoDetect(builder.Configuration.GetConnectionString("DefaultConnection"))
     ));
+    */
+builder.Services.AddDbContext<AppDbContext>(options =>
+{
+    var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+    // Usamos una versión específica de MySQL. 8.0.32 es un estándar muy seguro.
+    options.UseMySql(connectionString, new MySqlServerVersion(new Version(8, 0, 32)));
+});
 
 // ✅ AGREGAR CONFIGURACIÓN JWT AUTHENTICATION
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
