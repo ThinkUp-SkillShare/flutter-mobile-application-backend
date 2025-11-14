@@ -81,7 +81,7 @@ if (app.Environment.IsDevelopment())
 // USAR CORS - debe estar al inicio
 app.UseCors("AllowAll");
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 
 // ✅ AGREGAR AUTENTICACIÓN ANTES DE AUTORIZACIÓN
 app.UseAuthentication(); // ← ESTE ES EL QUE FALTABA
