@@ -74,20 +74,15 @@ app.UseCors("AllowAll");
 
 //app.UseHttpsRedirection();
 
+// ...
 var app = builder.Build();
 
 app.UseSwagger();
+app.UseSwaggerUI();
 
-// ⬇️ --- CAMBIO CLAVE --- ⬇️
-// 1. Define tu ruta raíz PRIMERO
 app.MapGet("/", () => "✅ SkillShare Backend is running successfully!");
 
-// 2. Deja que SwaggerUI maneje /swagger DESPUÉS
-app.UseSwaggerUI();
-// ⬆️ --- FIN DEL CAMBIO --- ⬆️
-
-
-// app.UseHttpsRedirection(); 
+// app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
