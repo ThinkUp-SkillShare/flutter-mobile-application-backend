@@ -178,32 +178,42 @@ namespace SkillShareBackend.Controllers
 
             Console.WriteLine($"📊 DEBUG: User is member of {userGroupIds.Count} groups");
 
-            // Obtener grupos donde el usuario NO es miembro
+            // Obtener grupos donde el usuario NO es miembro, ordenados por MemberCount DESC
             var featuredGroups = await _context.StudyGroups
                 .Where(g => !userGroupIds.Contains(g.Id))
                 .Include(g => g.Subject)
                 .Include(g => g.Creator)
                 .Include(g => g.Members)
-                .OrderByDescending(g => g.Members.Count)
-                .ThenByDescending(g => g.CreatedAt)
-                .Take(10)
-                .Select(g => new StudyGroupDto
+                .Select(g => new 
                 {
-                    Id = g.Id,
-                    Name = g.Name,
-                    Description = g.Description,
-                    CoverImage = g.CoverImage,
-                    CreatedBy = g.CreatedBy,
-                    CreatorName = g.Creator != null ? g.Creator.Email : null,
-                    SubjectId = g.SubjectId,
-                    SubjectName = g.Subject != null ? g.Subject.Name : null,
-                    CreatedAt = g.CreatedAt,
-                    MemberCount = g.Members.Count,
+                    Group = g,
+                    MemberCount = g.Members.Count
+                })
+                .OrderByDescending(x => x.MemberCount)
+                .ThenByDescending(x => x.Group.CreatedAt)
+                .Take(10)
+                .Select(x => new StudyGroupDto
+                {
+                    Id = x.Group.Id,
+                    Name = x.Group.Name,
+                    Description = x.Group.Description,
+                    CoverImage = x.Group.CoverImage,
+                    CreatedBy = x.Group.CreatedBy,
+                    CreatorName = x.Group.Creator != null ? x.Group.Creator.Email : null,
+                    SubjectId = x.Group.SubjectId,
+                    SubjectName = x.Group.Subject != null ? x.Group.Subject.Name : null,
+                    CreatedAt = x.Group.CreatedAt,
+                    MemberCount = x.MemberCount, // Esto ya es un int
                     UserRole = null
                 })
                 .ToListAsync();
 
             Console.WriteLine($"✅ DEBUG: Returning {featuredGroups.Count} featured groups");
+    
+            foreach (var group in featuredGroups)
+            {
+                Console.WriteLine($"🎯 Featured Group: {group.Name} - {group.MemberCount} members");
+            }
 
             return Ok(featuredGroups);
         }

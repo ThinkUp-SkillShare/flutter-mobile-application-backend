@@ -51,7 +51,7 @@ namespace SkillShareBackend.Services
             try
             {
                 return await _context.Students
-                    .Include(s => s.User)
+                    .Include(s => s.User) 
                     .FirstOrDefaultAsync(s => s.UserId == userId);
             }
             catch (Exception ex)
@@ -99,7 +99,10 @@ namespace SkillShareBackend.Services
         {
             try
             {
-                var student = await _context.Students.FindAsync(id);
+                var student = await _context.Students
+                    .Include(s => s.User)
+                    .FirstOrDefaultAsync(s => s.Id == id);
+                    
                 if (student == null)
                 {
                     return null;
@@ -123,12 +126,13 @@ namespace SkillShareBackend.Services
                 if (studentDto.UserType.HasValue)
                     student.UserType = studentDto.UserType.Value;
 
-                await _context.SaveChangesAsync();
+                // Actualizar la imagen de perfil del usuario si se proporciona
+                if (!string.IsNullOrEmpty(studentDto.ProfileImage) && student.User != null)
+                {
+                    student.User.ProfileImage = studentDto.ProfileImage;
+                }
 
-                // Load the user relationship
-                await _context.Entry(student)
-                    .Reference(s => s.User)
-                    .LoadAsync();
+                await _context.SaveChangesAsync();
 
                 return student;
             }

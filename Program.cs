@@ -69,22 +69,24 @@ builder.Services.AddAuthorization();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IStudentService, StudentService>(); 
 
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
 // USAR CORS - debe estar al inicio
 app.UseCors("AllowAll");
 
-//app.UseHttpsRedirection();
+app.UseHttpsRedirection();
 
-// ...
-var app = builder.Build();
-
-app.UseSwagger();
-app.UseSwaggerUI();
-
-app.MapGet("/", () => "✅ SkillShare Backend is running successfully!");
-
-// app.UseHttpsRedirection();
-
-app.UseAuthentication();
+// ✅ AGREGAR AUTENTICACIÓN ANTES DE AUTORIZACIÓN
+app.UseAuthentication(); // ← ESTE ES EL QUE FALTABA
 app.UseAuthorization();
+
+app.MapControllers();
 
 app.Run();

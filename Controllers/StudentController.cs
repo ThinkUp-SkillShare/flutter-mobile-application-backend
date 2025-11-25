@@ -141,7 +141,7 @@ namespace SkillShareBackend.Controllers
 
         private static StudentDto MapToDto(Student student)
         {
-            return new StudentDto
+            var studentDto = new StudentDto
             {
                 Id = student.Id,
                 FirstName = student.FirstName,
@@ -154,6 +154,20 @@ namespace SkillShareBackend.Controllers
                 UserType = student.UserType,
                 UserId = student.UserId
             };
+
+            // Mapear el User si está cargado
+            if (student.User != null)
+            {
+                studentDto.User = new UserDto
+                {
+                    UserId = student.User.UserId,
+                    Email = student.User.Email,
+                    ProfileImage = student.User.ProfileImage,
+                    CreatedAt = student.User.CreatedAt
+                };
+            }
+
+            return studentDto;
         }
     }
 }

@@ -8,6 +8,7 @@ namespace SkillShareBackend.Data
         public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
         public DbSet<User> Users { get; set; }
+        public DbSet<UserType> UserTypes { get; set; }
         public DbSet<Student> Students { get; set; }
         public DbSet<Subject> Subjects { get; set; }
         public DbSet<StudyGroup> StudyGroups { get; set; }
@@ -33,6 +34,16 @@ namespace SkillShareBackend.Data
                 entity.HasIndex(u => u.Email).IsUnique().HasDatabaseName("IX_Users_Email");
             });
 
+            // Configuración para UserType
+            modelBuilder.Entity<UserType>(entity =>
+            {
+                entity.ToTable("user_type");
+                entity.HasKey(ut => ut.Id).HasName("PRIMARY");
+                entity.Property(ut => ut.Id).HasColumnName("id").ValueGeneratedOnAdd();
+                entity.Property(ut => ut.Type).HasColumnName("type").IsRequired().HasMaxLength(50);
+                entity.HasIndex(ut => ut.Type).IsUnique();
+            });
+
             // Configuración para Student
             modelBuilder.Entity<Student>(entity =>
             {
@@ -52,7 +63,14 @@ namespace SkillShareBackend.Data
                 entity.HasOne(s => s.User)
                       .WithMany()
                       .HasForeignKey(s => s.UserId)
-                      .HasConstraintName("FK_Student_User");
+                      .HasConstraintName("FK_Student_User")
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne<UserType>()
+                      .WithMany()
+                      .HasForeignKey(s => s.UserType)
+                      .HasConstraintName("FK_Student_UserType")
+                      .OnDelete(DeleteBehavior.SetNull);
             });
 
             // Configuración para Subject
@@ -112,7 +130,6 @@ namespace SkillShareBackend.Data
                       .HasConstraintName("FK_GroupMember_User")
                       .OnDelete(DeleteBehavior.Cascade);
 
-                // Prevenir duplicados: un usuario solo puede estar una vez en un grupo
                 entity.HasIndex(gm => new { gm.GroupId, gm.UserId })
                       .IsUnique()
                       .HasDatabaseName("IX_GroupMember_GroupId_UserId");
@@ -151,58 +168,57 @@ namespace SkillShareBackend.Data
             });
             
             modelBuilder.Entity<MessageReaction>(entity =>
-{
-    entity.ToTable("message_reactions");
-    entity.HasKey(mr => mr.Id).HasName("PRIMARY");
-    entity.Property(mr => mr.Id).HasColumnName("id").ValueGeneratedOnAdd();
-    entity.Property(mr => mr.MessageId).HasColumnName("message_id").IsRequired();
-    entity.Property(mr => mr.UserId).HasColumnName("user_id").IsRequired();
-    entity.Property(mr => mr.Reaction).HasColumnName("reaction").HasMaxLength(10).IsRequired();
-    entity.Property(mr => mr.CreatedAt).HasColumnName("created_at");
+            {
+                entity.ToTable("message_reactions");
+                entity.HasKey(mr => mr.Id).HasName("PRIMARY");
+                entity.Property(mr => mr.Id).HasColumnName("id").ValueGeneratedOnAdd();
+                entity.Property(mr => mr.MessageId).HasColumnName("message_id").IsRequired();
+                entity.Property(mr => mr.UserId).HasColumnName("user_id").IsRequired();
+                entity.Property(mr => mr.Reaction).HasColumnName("reaction").HasMaxLength(10).IsRequired();
+                entity.Property(mr => mr.CreatedAt).HasColumnName("created_at");
 
-    entity.HasOne(mr => mr.Message)
-          .WithMany(m => m.Reactions)
-          .HasForeignKey(mr => mr.MessageId)
-          .HasConstraintName("FK_MessageReaction_Message")
-          .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(mr => mr.Message)
+                      .WithMany(m => m.Reactions)
+                      .HasForeignKey(mr => mr.MessageId)
+                      .HasConstraintName("FK_MessageReaction_Message")
+                      .OnDelete(DeleteBehavior.Cascade);
 
-    entity.HasOne(mr => mr.User)
-          .WithMany()
-          .HasForeignKey(mr => mr.UserId)
-          .HasConstraintName("FK_MessageReaction_User")
-          .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(mr => mr.User)
+                      .WithMany()
+                      .HasForeignKey(mr => mr.UserId)
+                      .HasConstraintName("FK_MessageReaction_User")
+                      .OnDelete(DeleteBehavior.Cascade);
 
-    entity.HasIndex(mr => new { mr.MessageId, mr.UserId, mr.Reaction })
-          .IsUnique()
-          .HasDatabaseName("IX_MessageReaction_Unique");
-});
+                entity.HasIndex(mr => new { mr.MessageId, mr.UserId, mr.Reaction })
+                      .IsUnique()
+                      .HasDatabaseName("IX_MessageReaction_Unique");
+            });
 
-// Configuración para MessageReadStatus
-modelBuilder.Entity<MessageReadStatus>(entity =>
-{
-    entity.ToTable("message_read_status");
-    entity.HasKey(mrs => mrs.Id).HasName("PRIMARY");
-    entity.Property(mrs => mrs.Id).HasColumnName("id").ValueGeneratedOnAdd();
-    entity.Property(mrs => mrs.MessageId).HasColumnName("message_id").IsRequired();
-    entity.Property(mrs => mrs.UserId).HasColumnName("user_id").IsRequired();
-    entity.Property(mrs => mrs.ReadAt).HasColumnName("read_at");
+            modelBuilder.Entity<MessageReadStatus>(entity =>
+            {
+                entity.ToTable("message_read_status");
+                entity.HasKey(mrs => mrs.Id).HasName("PRIMARY");
+                entity.Property(mrs => mrs.Id).HasColumnName("id").ValueGeneratedOnAdd();
+                entity.Property(mrs => mrs.MessageId).HasColumnName("message_id").IsRequired();
+                entity.Property(mrs => mrs.UserId).HasColumnName("user_id").IsRequired();
+                entity.Property(mrs => mrs.ReadAt).HasColumnName("read_at");
 
-    entity.HasOne(mrs => mrs.Message)
-          .WithMany(m => m.ReadStatuses)
-          .HasForeignKey(mrs => mrs.MessageId)
-          .HasConstraintName("FK_MessageReadStatus_Message")
-          .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(mrs => mrs.Message)
+                      .WithMany(m => m.ReadStatuses)
+                      .HasForeignKey(mrs => mrs.MessageId)
+                      .HasConstraintName("FK_MessageReadStatus_Message")
+                      .OnDelete(DeleteBehavior.Cascade);
 
-    entity.HasOne(mrs => mrs.User)
-          .WithMany()
-          .HasForeignKey(mrs => mrs.UserId)
-          .HasConstraintName("FK_MessageReadStatus_User")
-          .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(mrs => mrs.User)
+                      .WithMany()
+                      .HasForeignKey(mrs => mrs.UserId)
+                      .HasConstraintName("FK_MessageReadStatus_User")
+                      .OnDelete(DeleteBehavior.Cascade);
 
-    entity.HasIndex(mrs => new { mrs.MessageId, mrs.UserId })
-          .IsUnique()
-          .HasDatabaseName("IX_MessageReadStatus_Unique");
-});
+                entity.HasIndex(mrs => new { mrs.MessageId, mrs.UserId })
+                      .IsUnique()
+                      .HasDatabaseName("IX_MessageReadStatus_Unique");
+            });
         }
 
         public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
