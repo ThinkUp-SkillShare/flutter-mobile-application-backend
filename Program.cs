@@ -68,6 +68,7 @@ builder.Services.AddAuthorization();
 // Add Services
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IStudentService, StudentService>(); 
+builder.Services.AddScoped<IGroupManagementService, GroupManagementService>();
 
 var app = builder.Build();
 
