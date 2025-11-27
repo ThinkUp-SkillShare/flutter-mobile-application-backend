@@ -92,4 +92,10 @@ app.UseAuthorization();
 
 app.MapControllers();
 
+app.Map("/ws/{groupId}", async (HttpContext context, int groupId) =>
+{
+    var handler = new WebSocketHandler();
+    await handler.HandleWebSocket(context, groupId);
+});
+
 app.Run();

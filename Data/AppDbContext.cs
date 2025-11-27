@@ -17,10 +17,29 @@ namespace SkillShareBackend.Data
         public DbSet<MessageReaction> MessageReactions { get; set; }
         public DbSet<MessageReadStatus> MessageReadStatuses { get; set; }
 
+        public DbSet<GroupCall> GroupCalls { get; set; }
+        public DbSet<CallParticipant> CallParticipants { get; set; }
+        public DbSet<CallStatistics> CallStatistics { get; set; }
+        
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
+            modelBuilder.Entity<GroupCall>()
+                .HasAlternateKey(gc => gc.CallId);
+
+            modelBuilder.Entity<CallParticipant>()
+                .HasOne(cp => cp.GroupCall)
+                .WithMany(gc => gc.Participants)
+                .HasForeignKey(cp => cp.CallId)
+                .HasPrincipalKey(gc => gc.CallId);
+
+            modelBuilder.Entity<CallStatistics>()
+                .HasOne(cs => cs.GroupCall)
+                .WithMany()
+                .HasForeignKey(cs => cs.CallId)
+                .HasPrincipalKey(gc => gc.CallId);
+            
             // Configuración para User
             modelBuilder.Entity<User>(entity =>
             {
