@@ -29,50 +29,34 @@ namespace SkillShareBackend.Services
     {
         _logger.LogInformation($"🔐 LOGIN ATTEMPT - Email: {loginRequest.Email}");
 
-        // Validate email format
-        if (!IsValidEmail(loginRequest.Email))
-        {
-            _logger.LogWarning($"❌ INVALID EMAIL FORMAT: {loginRequest.Email}");
-            return new LoginResponseDto
-            {
-                Success = false,
-                Message = "Invalid email format"
-            };
-        }
-
-        // Find user by email
+        // Validaciones existentes...
         var user = await _context.Users
             .FirstOrDefaultAsync(u => u.Email == loginRequest.Email);
 
         if (user == null)
         {
             _logger.LogWarning($"❌ USER NOT FOUND: {loginRequest.Email}");
-            return new LoginResponseDto
-            {
-                Success = false,
-                Message = "Invalid credentials"
-            };
+            return new LoginResponseDto { Success = false, Message = "Invalid credentials" };
         }
 
         _logger.LogInformation($"✅ USER FOUND - UserId: {user.UserId}, Email: {user.Email}");
 
-        // Verify password using BCrypt
+        // Verificar contraseña
         bool isPasswordValid = BCrypt.Net.BCrypt.Verify(loginRequest.Password, user.Password);
-        
         _logger.LogInformation($"🔑 PASSWORD VERIFICATION RESULT: {isPasswordValid}");
 
         if (!isPasswordValid)
         {
-            _logger.LogWarning($"❌ INVALID PASSWORD for: {loginRequest.Email}");
-            return new LoginResponseDto
-            {
-                Success = false,
-                Message = "Invalid credentials"
-            };
+            return new LoginResponseDto { Success = false, Message = "Invalid credentials" };
         }
 
-        // Generate JWT token
+        // Generar token
         var token = GenerateJwtToken(user);
+        
+        // DEBUG: Mostrar el token generado (solo en desarrollo)
+        #if DEBUG
+        _logger.LogInformation($"🔐 TOKEN GENERATED - Length: {token.Length}");
+        #endif
 
         _logger.LogInformation($"🎉 SUCCESSFUL LOGIN - User: {user.Email}, UserId: {user.UserId}");
 
@@ -86,7 +70,7 @@ namespace SkillShareBackend.Services
                 UserId = user.UserId,
                 Email = user.Email,
                 ProfileImage = user.ProfileImage,
-                CreatedAt = user.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") // Convertir DateTime a string
+                CreatedAt = user.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")
             }
         };
     }
@@ -137,8 +121,16 @@ namespace SkillShareBackend.Services
 
             var claims = new[]
             {
-                new Claim(JwtRegisteredClaimNames.Sub, user.Email),
+                new Claim(ClaimTypes.NameIdentifier, user.UserId.ToString()),
+        
+                new Claim("uid", user.UserId.ToString()),
                 new Claim("userId", user.UserId.ToString()),
+        
+                new Claim(ClaimTypes.Name, user.Email),
+                new Claim(ClaimTypes.Email, user.Email),
+        
+                new Claim(JwtRegisteredClaimNames.Sub, user.UserId.ToString()),
+        
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             };
 

@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authorization;
+﻿using System.IdentityModel.Tokens.Jwt;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SkillShareBackend.Data;
@@ -16,20 +17,63 @@ namespace SkillShareBackend.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IGroupManagementService _groupManagementService;
+        private readonly ILogger<StudyGroupController> _logger;
 
-        public StudyGroupController(AppDbContext context, IGroupManagementService groupManagementService)
+        public StudyGroupController(
+            AppDbContext context, 
+            IGroupManagementService groupManagementService,
+            ILogger<StudyGroupController> logger)
         {
             _context = context;
             _groupManagementService = groupManagementService;
+            _logger = logger;
         }
 
         /// <summary>
         /// Retrieves authenticated user's ID from JWT token.
         /// </summary>
-        private int? GetUserId()
+        private int GetUserId()
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            return int.TryParse(userIdClaim, out int userId) ? userId : null;
+            try
+            {
+                _logger.LogInformation("🔍 Available user claims:");
+                foreach (var claim in User.Claims)
+                {
+                    _logger.LogInformation($"   {claim.Type}: {claim.Value}");
+                }
+
+                // Prioridad de claims para buscar el User ID
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                                  ?? User.FindFirst("uid")?.Value
+                                  ?? User.FindFirst("userId")?.Value
+                                  ?? User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
+
+                if (string.IsNullOrEmpty(userIdClaim))
+                {
+                    _logger.LogError("❌ User ID not found in any claim type");
+                    throw new UnauthorizedAccessException("User ID not found in token");
+                }
+
+                if (int.TryParse(userIdClaim, out int userId))
+                {
+                    _logger.LogInformation($"✅ User ID extracted: {userId}");
+                    return userId;
+                }
+                else
+                {
+                    _logger.LogError($"❌ User ID could not be parsed: {userIdClaim}");
+                    throw new UnauthorizedAccessException($"User ID '{userIdClaim}' is not a valid integer");
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error extracting user ID from token");
+                throw new UnauthorizedAccessException("Failed to extract user ID from token");
+            }
         }
 
         #region CRUD Básico (ya existente)
@@ -153,47 +197,55 @@ namespace SkillShareBackend.Controllers
         [HttpPost]
         public async Task<ActionResult<StudyGroupDto>> CreateStudyGroup([FromBody] CreateStudyGroupDto dto)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var group = new StudyGroup
+                {
+                    Name = dto.Name,
+                    Description = dto.Description,
+                    CoverImage = dto.CoverImage,
+                    CreatedBy = userId,
+                    SubjectId = dto.SubjectId,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.StudyGroups.Add(group);
+                await _context.SaveChangesAsync();
+
+                var membership = new GroupMember
+                {
+                    GroupId = group.Id,
+                    UserId = userId,
+                    Role = "admin" // creator is automatically admin
+                };
+
+                _context.GroupMembers.Add(membership);
+                await _context.SaveChangesAsync();
+
+                return CreatedAtAction(nameof(GetStudyGroup), new { id = group.Id }, new StudyGroupDto
+                {
+                    Id = group.Id,
+                    Name = group.Name,
+                    Description = group.Description,
+                    CoverImage = group.CoverImage,
+                    CreatedBy = group.CreatedBy,
+                    SubjectId = group.SubjectId,
+                    CreatedAt = group.CreatedAt,
+                    MemberCount = 1,
+                    UserRole = "admin"
+                });
             }
-
-            var group = new StudyGroup
+            catch (UnauthorizedAccessException ex)
             {
-                Name = dto.Name,
-                Description = dto.Description,
-                CoverImage = dto.CoverImage,
-                CreatedBy = userId.Value,
-                SubjectId = dto.SubjectId,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            _context.StudyGroups.Add(group);
-            await _context.SaveChangesAsync();
-
-            var membership = new GroupMember
+                return Unauthorized(new { message = ex.Message });
+            }
+            catch (Exception ex)
             {
-                GroupId = group.Id,
-                UserId = userId.Value,
-                Role = "admin" // creator is automatically admin
-            };
-
-            _context.GroupMembers.Add(membership);
-            await _context.SaveChangesAsync();
-
-            return CreatedAtAction(nameof(GetStudyGroup), new { id = group.Id }, new StudyGroupDto
-            {
-                Id = group.Id,
-                Name = group.Name,
-                Description = group.Description,
-                CoverImage = group.CoverImage,
-                CreatedBy = group.CreatedBy,
-                SubjectId = group.SubjectId,
-                CreatedAt = group.CreatedAt,
-                MemberCount = 1,
-                UserRole = "admin"
-            });
+                _logger.LogError(ex, "Error creating study group");
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -202,36 +254,44 @@ namespace SkillShareBackend.Controllers
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateStudyGroup(int id, [FromBody] UpdateStudyGroupDto dto)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
-            }
+                var userId = GetUserId();
 
-            var group = await _context.StudyGroups.FindAsync(id);
-            if (group == null)
+                var group = await _context.StudyGroups.FindAsync(id);
+                if (group == null)
+                {
+                    return NotFound(new { message = "Group not found" });
+                }
+
+                // Permissions handled by service
+                if (!await _groupManagementService.CanUserEditGroup(id, userId))
+                {
+                    return Forbid();
+                }
+
+                if (!string.IsNullOrEmpty(dto.Name))
+                    group.Name = dto.Name;
+                if (dto.Description != null)
+                    group.Description = dto.Description;
+                if (dto.CoverImage != null)
+                    group.CoverImage = dto.CoverImage;
+                if (dto.SubjectId.HasValue)
+                    group.SubjectId = dto.SubjectId;
+
+                await _context.SaveChangesAsync();
+
+                return NoContent();
+            }
+            catch (UnauthorizedAccessException ex)
             {
-                return NotFound(new { message = "Group not found" });
+                return Unauthorized(new { message = ex.Message });
             }
-
-            // Permissions handled by service
-            if (!await _groupManagementService.CanUserEditGroup(id, userId.Value))
+            catch (Exception ex)
             {
-                return Forbid();
+                _logger.LogError(ex, "Error updating study group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
             }
-
-            if (!string.IsNullOrEmpty(dto.Name))
-                group.Name = dto.Name;
-            if (dto.Description != null)
-                group.Description = dto.Description;
-            if (dto.CoverImage != null)
-                group.CoverImage = dto.CoverImage;
-            if (dto.SubjectId.HasValue)
-                group.SubjectId = dto.SubjectId;
-
-            await _context.SaveChangesAsync();
-
-            return NoContent();
         }
 
         /// <summary>
@@ -240,28 +300,36 @@ namespace SkillShareBackend.Controllers
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteStudyGroup(int id)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
-            }
+                var userId = GetUserId();
 
-            var group = await _context.StudyGroups.FindAsync(id);
-            if (group == null)
+                var group = await _context.StudyGroups.FindAsync(id);
+                if (group == null)
+                {
+                    return NotFound(new { message = "Group not found" });
+                }
+
+                // Permission validated through service
+                if (!await _groupManagementService.CanUserDeleteGroup(id, userId))
+                {
+                    return Forbid();
+                }
+
+                _context.StudyGroups.Remove(group);
+                await _context.SaveChangesAsync();
+
+                return NoContent();
+            }
+            catch (UnauthorizedAccessException ex)
             {
-                return NotFound(new { message = "Group not found" });
+                return Unauthorized(new { message = ex.Message });
             }
-
-            // Permission validated through service
-            if (!await _groupManagementService.CanUserDeleteGroup(id, userId.Value))
+            catch (Exception ex)
             {
-                return Forbid();
+                _logger.LogError(ex, "Error deleting study group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
             }
-
-            _context.StudyGroups.Remove(group);
-            await _context.SaveChangesAsync();
-
-            return NoContent();
         }
 
         #endregion
@@ -275,37 +343,45 @@ namespace SkillShareBackend.Controllers
         [HttpPost("{id}/join")]
         public async Task<IActionResult> JoinGroup(int id)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var group = await _context.StudyGroups.FindAsync(id);
+                if (group == null)
+                {
+                    return NotFound(new { message = "Group not found" });
+                }
+
+                var existingMembership = await _context.GroupMembers
+                    .FirstOrDefaultAsync(gm => gm.GroupId == id && gm.UserId == userId);
+
+                if (existingMembership != null)
+                {
+                    return BadRequest(new { message = "Already a member of this group" });
+                }
+
+                var membership = new GroupMember
+                {
+                    GroupId = id,
+                    UserId = userId,
+                    Role = "member"
+                };
+
+                _context.GroupMembers.Add(membership);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "Successfully joined the group" });
             }
-
-            var group = await _context.StudyGroups.FindAsync(id);
-            if (group == null)
+            catch (UnauthorizedAccessException ex)
             {
-                return NotFound(new { message = "Group not found" });
+                return Unauthorized(new { message = ex.Message });
             }
-
-            var existingMembership = await _context.GroupMembers
-                .FirstOrDefaultAsync(gm => gm.GroupId == id && gm.UserId == userId.Value);
-
-            if (existingMembership != null)
+            catch (Exception ex)
             {
-                return BadRequest(new { message = "Already a member of this group" });
+                _logger.LogError(ex, "Error joining group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
             }
-
-            var membership = new GroupMember
-            {
-                GroupId = id,
-                UserId = userId.Value,
-                Role = "member"
-            };
-
-            _context.GroupMembers.Add(membership);
-            await _context.SaveChangesAsync();
-
-            return Ok(new { message = "Successfully joined the group" });
         }
 
         /// <summary>
@@ -315,36 +391,44 @@ namespace SkillShareBackend.Controllers
         [HttpDelete("{id}/leave")]
         public async Task<IActionResult> LeaveGroup(int id)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
-            }
+                var userId = GetUserId();
 
-            var membership = await _context.GroupMembers
-                .FirstOrDefaultAsync(gm => gm.GroupId == id && gm.UserId == userId.Value);
+                var membership = await _context.GroupMembers
+                    .FirstOrDefaultAsync(gm => gm.GroupId == id && gm.UserId == userId);
 
-            if (membership == null)
-            {
-                return NotFound(new { message = "Membership not found" });
-            }
-
-            var group = await _context.StudyGroups.FindAsync(id);
-            if (group != null && group.CreatedBy == userId.Value)
-            {
-                var adminCount = await _context.GroupMembers
-                    .CountAsync(gm => gm.GroupId == id && gm.Role == "admin");
-
-                if (adminCount <= 1)
+                if (membership == null)
                 {
-                    return BadRequest(new { message = "Cannot leave: you are the only admin" });
+                    return NotFound(new { message = "Membership not found" });
                 }
+
+                var group = await _context.StudyGroups.FindAsync(id);
+                if (group != null && group.CreatedBy == userId)
+                {
+                    var adminCount = await _context.GroupMembers
+                        .CountAsync(gm => gm.GroupId == id && gm.Role == "admin");
+
+                    if (adminCount <= 1)
+                    {
+                        return BadRequest(new { message = "Cannot leave: you are the only admin" });
+                    }
+                }
+
+                _context.GroupMembers.Remove(membership);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "Successfully left the group" });
             }
-
-            _context.GroupMembers.Remove(membership);
-            await _context.SaveChangesAsync();
-
-            return Ok(new { message = "Successfully left the group" });
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error leaving group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -379,14 +463,29 @@ namespace SkillShareBackend.Controllers
         [HttpGet("{id}/permissions")]
         public async Task<ActionResult<GroupPermissionsDto>> GetUserPermissions(int id)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                // Debug: mostrar claims del usuario
+                _logger.LogInformation("User claims: {@Claims}", User.Claims.Select(c => new { c.Type, c.Value }));
+        
+                var userId = GetUserId();
+                _logger.LogInformation("Extracted user ID: {UserId} for permissions check in group {GroupId}", userId, id);
+        
+                var permissions = await _groupManagementService.GetUserPermissions(id, userId);
+                _logger.LogInformation("Permissions for user {UserId} in group {GroupId}: {@Permissions}", userId, id, permissions);
+        
+                return Ok(permissions);
             }
-
-            var permissions = await _groupManagementService.GetUserPermissions(id, userId.Value);
-            return Ok(permissions);
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning("Unauthorized access attempt: {Message}", ex.Message);
+                return Unauthorized(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting user permissions for group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -396,22 +495,30 @@ namespace SkillShareBackend.Controllers
         [HttpGet("{id}/statistics")]
         public async Task<ActionResult<GroupStatisticsDto>> GetGroupStatistics(int id)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var isMember = await _context.GroupMembers
+                    .AnyAsync(gm => gm.GroupId == id && gm.UserId == userId);
+
+                if (!isMember)
+                {
+                    return Forbid();
+                }
+
+                var statistics = await _groupManagementService.GetGroupStatistics(id);
+                return Ok(statistics);
             }
-
-            var isMember = await _context.GroupMembers
-                .AnyAsync(gm => gm.GroupId == id && gm.UserId == userId.Value);
-
-            if (!isMember)
+            catch (UnauthorizedAccessException ex)
             {
-                return Forbid();
+                return Unauthorized(new { message = ex.Message });
             }
-
-            var statistics = await _groupManagementService.GetGroupStatistics(id);
-            return Ok(statistics);
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting statistics for group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -420,20 +527,28 @@ namespace SkillShareBackend.Controllers
         [HttpPost("{id}/members/{memberId}/promote")]
         public async Task<IActionResult> PromoteToAdmin(int id, int memberId)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var result = await _groupManagementService.PromoteToAdmin(id, memberId, userId);
+
+                if (!result)
+                {
+                    return BadRequest(new { message = "Failed to promote member. You may lack permissions or the member may already be an admin." });
+                }
+
+                return Ok(new { message = "Member promoted to admin successfully" });
             }
-
-            var result = await _groupManagementService.PromoteToAdmin(id, memberId, userId.Value);
-
-            if (!result)
+            catch (UnauthorizedAccessException ex)
             {
-                return BadRequest(new { message = "Failed to promote member. You may lack permissions or the member may already be an admin." });
+                return Unauthorized(new { message = ex.Message });
             }
-
-            return Ok(new { message = "Member promoted to admin successfully" });
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error promoting member {MemberId} in group {GroupId}", memberId, id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -442,20 +557,28 @@ namespace SkillShareBackend.Controllers
         [HttpPost("{id}/members/{memberId}/demote")]
         public async Task<IActionResult> DemoteToMember(int id, int memberId)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var result = await _groupManagementService.DemoteToMember(id, memberId, userId);
+
+                if (!result)
+                {
+                    return BadRequest(new { message = "Failed to demote admin. You may lack permissions or this is the only admin." });
+                }
+
+                return Ok(new { message = "Admin demoted to member successfully" });
             }
-
-            var result = await _groupManagementService.DemoteToMember(id, memberId, userId.Value);
-
-            if (!result)
+            catch (UnauthorizedAccessException ex)
             {
-                return BadRequest(new { message = "Failed to demote admin. You may lack permissions or this is the only admin." });
+                return Unauthorized(new { message = ex.Message });
             }
-
-            return Ok(new { message = "Admin demoted to member successfully" });
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error demoting member {MemberId} in group {GroupId}", memberId, id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -464,20 +587,28 @@ namespace SkillShareBackend.Controllers
         [HttpDelete("{id}/members/{memberId}")]
         public async Task<IActionResult> RemoveMember(int id, int memberId)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var result = await _groupManagementService.RemoveMember(id, memberId, userId);
+
+                if (!result)
+                {
+                    return BadRequest(new { message = "Failed to remove member. You may lack permissions or cannot remove this user." });
+                }
+
+                return Ok(new { message = "Member removed successfully" });
             }
-
-            var result = await _groupManagementService.RemoveMember(id, memberId, userId.Value);
-
-            if (!result)
+            catch (UnauthorizedAccessException ex)
             {
-                return BadRequest(new { message = "Failed to remove member. You may lack permissions or cannot remove this user." });
+                return Unauthorized(new { message = ex.Message });
             }
-
-            return Ok(new { message = "Member removed successfully" });
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error removing member {MemberId} from group {GroupId}", memberId, id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -486,19 +617,27 @@ namespace SkillShareBackend.Controllers
         [HttpPost("{id}/members/bulk-remove")]
         public async Task<ActionResult<List<int>>> BulkRemoveMembers(int id, [FromBody] BulkRemoveMembersDto dto)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var removedIds = await _groupManagementService.BulkRemoveMembers(id, dto.UserIds, userId);
+
+                return Ok(new
+                {
+                    message = $"Removed {removedIds.Count} of {dto.UserIds.Count} members",
+                    removedUserIds = removedIds
+                });
             }
-
-            var removedIds = await _groupManagementService.BulkRemoveMembers(id, dto.UserIds, userId.Value);
-
-            return Ok(new
+            catch (UnauthorizedAccessException ex)
             {
-                message = $"Removed {removedIds.Count} of {dto.UserIds.Count} members",
-                removedUserIds = removedIds
-            });
+                return Unauthorized(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error bulk removing members from group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         /// <summary>
@@ -507,20 +646,28 @@ namespace SkillShareBackend.Controllers
         [HttpPost("{id}/transfer-ownership")]
         public async Task<IActionResult> TransferOwnership(int id, [FromBody] TransferOwnershipDto dto)
         {
-            var userId = GetUserId();
-            if (!userId.HasValue)
+            try
             {
-                return Unauthorized(new { message = "User not authenticated" });
+                var userId = GetUserId();
+
+                var result = await _groupManagementService.TransferOwnership(id, dto.NewOwnerId, userId);
+
+                if (!result)
+                {
+                    return BadRequest(new { message = "Failed to transfer ownership. You must be the owner and the target must be a member." });
+                }
+
+                return Ok(new { message = "Ownership transferred successfully" });
             }
-
-            var result = await _groupManagementService.TransferOwnership(id, dto.NewOwnerId, userId.Value);
-
-            if (!result)
+            catch (UnauthorizedAccessException ex)
             {
-                return BadRequest(new { message = "Failed to transfer ownership. You must be the owner and the target must be a member." });
+                return Unauthorized(new { message = ex.Message });
             }
-
-            return Ok(new { message = "Ownership transferred successfully" });
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error transferring ownership of group {GroupId}", id);
+                return StatusCode(500, new { message = "Internal server error" });
+            }
         }
 
         #endregion
