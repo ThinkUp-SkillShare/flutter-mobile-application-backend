@@ -1,17 +1,28 @@
-﻿namespace SkillShareBackend.DTOs;
-
-public class LoginResponseDto
+﻿namespace SkillShareBackend.DTOs
 {
-    public bool Success { get; set; }
-    public string Message { get; set; } = string.Empty;
-    public string Token { get; set; } = string.Empty;
-    public UserResponseDto? User { get; set; }
-}
+    /// <summary>
+    /// DTO representing the response from a login request.
+    /// </summary>
+    public class LoginResponseDto
+    {
+        /// <summary>
+        /// Indicates if login was successful.
+        /// </summary>
+        public bool Success { get; set; }
 
-public class UserResponseDto
-{
-    public int UserId { get; set; }
-    public string Email { get; set; } = string.Empty;
-    public string? ProfileImage { get; set; }
-    public string CreatedAt { get; set; } = string.Empty;
+        /// <summary>
+        /// Message for the client (e.g., error or success message).
+        /// </summary>
+        public string Message { get; set; } = string.Empty;
+
+        /// <summary>
+        /// JWT token generated after successful login.
+        /// </summary>
+        public string Token { get; set; } = string.Empty;
+
+        /// <summary>
+        /// User details associated with the login.
+        /// </summary>
+        public UserResponseDto? User { get; set; }
+    }
 }
