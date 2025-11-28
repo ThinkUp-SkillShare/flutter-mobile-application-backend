@@ -29,10 +29,8 @@ public class CallsController : ControllerBase
         {
             var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
-            // Verificar si el usuario es miembro del grupo
             var groupMember = await _context.GroupMembers
                 .FirstOrDefaultAsync(gm => gm.GroupId == request.GroupId && gm.UserId == userId);
-
             if (groupMember == null) return Unauthorized("You are not a member of this group");
 
             var group = await _context.StudyGroups.FindAsync(request.GroupId);
@@ -51,10 +49,8 @@ public class CallsController : ControllerBase
                     new() { UserId = userId, JoinedAt = DateTime.UtcNow }
                 }
             };
-
             _activeCalls[callId] = callSession;
 
-            // Guardar en base de datos para historial
             var callRecord = new GroupCall
             {
                 CallId = callId,
@@ -63,10 +59,8 @@ public class CallsController : ControllerBase
                 StartedAt = DateTime.UtcNow,
                 IsActive = true
             };
-
             _context.GroupCalls.Add(callRecord);
 
-            // También registrar al primer participante
             var participantRecord = new CallParticipant
             {
                 CallId = callId,
@@ -97,13 +91,10 @@ public class CallsController : ControllerBase
         {
             var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
-            // Verificar si el usuario es miembro del grupo
             var groupMember = await _context.GroupMembers
                 .FirstOrDefaultAsync(gm => gm.GroupId == request.GroupId && gm.UserId == userId);
-
             if (groupMember == null) return Unauthorized("You are not a member of this group");
 
-            // Para WebRTC simple, generamos un token básico
             var tokenData = new
             {
                 userId,
@@ -113,7 +104,8 @@ public class CallsController : ControllerBase
             };
 
             var token = Convert.ToBase64String(
-                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(tokenData)));
+                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(tokenData))
+            );
 
             return Ok(new
             {
@@ -123,7 +115,7 @@ public class CallsController : ControllerBase
                     new { urls = "stun:stun.l.google.com:19302" },
                     new { urls = "stun:stun1.l.google.com:19302" }
                 },
-                turnServers = new[] // Estos son opcionales para desarrollo
+                turnServers = new[]
                 {
                     new
                     {
@@ -147,7 +139,6 @@ public class CallsController : ControllerBase
         {
             var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
-            // Buscar la llamada activa para este grupo
             var activeCall = _activeCalls.Values.FirstOrDefault(c =>
                 c.GroupId == request.GroupId && c.IsActive);
 
@@ -156,7 +147,6 @@ public class CallsController : ControllerBase
                 activeCall.IsActive = false;
                 activeCall.EndedAt = DateTime.UtcNow;
 
-                // Actualizar en base de datos
                 var callRecord = await _context.GroupCalls
                     .FirstOrDefaultAsync(c => c.CallId == activeCall.CallId && c.IsActive);
 
@@ -165,12 +155,12 @@ public class CallsController : ControllerBase
                     callRecord.IsActive = false;
                     callRecord.EndedAt = DateTime.UtcNow;
 
-                    // Actualizar participantes para marcar que salieron
                     var activeParticipants = await _context.CallParticipants
                         .Where(cp => cp.CallId == activeCall.CallId && cp.LeftAt == null)
                         .ToListAsync();
 
-                    foreach (var participant in activeParticipants) participant.LeftAt = DateTime.UtcNow;
+                    foreach (var participant in activeParticipants)
+                        participant.LeftAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
                 }
@@ -193,19 +183,14 @@ public class CallsController : ControllerBase
         {
             var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
-            // Verificar si existe una llamada activa
             var activeCall = _activeCalls.Values.FirstOrDefault(c =>
                 c.GroupId == request.GroupId && c.IsActive);
-
             if (activeCall == null) return NotFound(new { error = "No active call found for this group" });
 
-            // Verificar si el usuario es miembro del grupo
             var groupMember = await _context.GroupMembers
                 .FirstOrDefaultAsync(gm => gm.GroupId == request.GroupId && gm.UserId == userId);
-
             if (groupMember == null) return Unauthorized("You are not a member of this group");
 
-            // Agregar usuario a la sesión en memoria
             if (!activeCall.Participants.Any(p => p.UserId == userId))
                 activeCall.Participants.Add(new SessionParticipant
                 {
@@ -213,7 +198,6 @@ public class CallsController : ControllerBase
                     JoinedAt = DateTime.UtcNow
                 });
 
-            // Registrar en base de datos
             var existingParticipant = await _context.CallParticipants
                 .FirstOrDefaultAsync(cp => cp.CallId == activeCall.CallId && cp.UserId == userId && cp.LeftAt == null);
 
@@ -261,7 +245,7 @@ public class CallsController : ControllerBase
                 participants = activeCall.Participants.Select(p => new
                 {
                     userId = p.UserId,
-                    joinedAt = p.JoinedAt 
+                    joinedAt = p.JoinedAt
                 })
             });
         }
@@ -280,7 +264,6 @@ public class CallsController : ControllerBase
 
             var groupMember = await _context.GroupMembers
                 .FirstOrDefaultAsync(gm => gm.GroupId == groupId && gm.UserId == userId);
-
             if (groupMember == null) return Unauthorized("You are not a member of this group");
 
             var callHistory = await _context.GroupCalls
@@ -307,7 +290,9 @@ public class CallsController : ControllerBase
     }
 }
 
-// Clases auxiliares para el controlador (NO son modelos de BD)
+// ==============================
+// Auxiliary classes for controller
+// ==============================
 public class CreateCallRequest
 {
     public int GroupId { get; set; }
