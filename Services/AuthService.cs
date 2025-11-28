@@ -1,161 +1,155 @@
-﻿using Microsoft.IdentityModel.Tokens;
-using System.IdentityModel.Tokens.Jwt;
+﻿using System.IdentityModel.Tokens.Jwt;
+using System.Net.Mail;
 using System.Security.Claims;
 using System.Text;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using SkillShareBackend.Data;
 using SkillShareBackend.DTOs;
 using SkillShareBackend.Models;
-using Microsoft.EntityFrameworkCore;
-using BCrypt.Net;
 
-namespace SkillShareBackend.Services
+namespace SkillShareBackend.Services;
+
+public class AuthService : IAuthService
 {
-    public class AuthService : IAuthService
+    private readonly IConfiguration _config;
+    private readonly AppDbContext _context;
+    private readonly ILogger<AuthService> _logger;
+
+    public AuthService(AppDbContext context, IConfiguration config, ILogger<AuthService> logger)
     {
-        private readonly AppDbContext _context;
-        private readonly IConfiguration _config;
-        private readonly ILogger<AuthService> _logger;
-
-        public AuthService(AppDbContext context, IConfiguration config, ILogger<AuthService> logger)
-        {
-            _context = context;
-            _config = config;
-            _logger = logger;
-        }
-
-        public async Task<LoginResponseDto> LoginAsync(LoginRequestDto loginRequest)
-{
-    try
-    {
-        _logger.LogInformation($"🔐 LOGIN ATTEMPT - Email: {loginRequest.Email}");
-
-        // Validaciones existentes...
-        var user = await _context.Users
-            .FirstOrDefaultAsync(u => u.Email == loginRequest.Email);
-
-        if (user == null)
-        {
-            _logger.LogWarning($"❌ USER NOT FOUND: {loginRequest.Email}");
-            return new LoginResponseDto { Success = false, Message = "Invalid credentials" };
-        }
-
-        _logger.LogInformation($"✅ USER FOUND - UserId: {user.UserId}, Email: {user.Email}");
-
-        // Verificar contraseña
-        bool isPasswordValid = BCrypt.Net.BCrypt.Verify(loginRequest.Password, user.Password);
-        _logger.LogInformation($"🔑 PASSWORD VERIFICATION RESULT: {isPasswordValid}");
-
-        if (!isPasswordValid)
-        {
-            return new LoginResponseDto { Success = false, Message = "Invalid credentials" };
-        }
-
-        // Generar token
-        var token = GenerateJwtToken(user);
-        
-        // DEBUG: Mostrar el token generado (solo en desarrollo)
-        #if DEBUG
-        _logger.LogInformation($"🔐 TOKEN GENERATED - Length: {token.Length}");
-        #endif
-
-        _logger.LogInformation($"🎉 SUCCESSFUL LOGIN - User: {user.Email}, UserId: {user.UserId}");
-
-        return new LoginResponseDto
-        {
-            Success = true,
-            Message = "Login successful",
-            Token = token,
-            User = new UserResponseDto
-            {
-                UserId = user.UserId,
-                Email = user.Email,
-                ProfileImage = user.ProfileImage,
-                CreatedAt = user.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")
-            }
-        };
+        _context = context;
+        _config = config;
+        _logger = logger;
     }
-    catch (Exception ex)
-    {
-        _logger.LogError(ex, $"💥 ERROR DURING LOGIN for {loginRequest.Email}");
-        return new LoginResponseDto
-        {
-            Success = false,
-            Message = "An error occurred during login"
-        };
-    }
-}
 
-        public async Task<User> RegisterAsync(User user)
+    public async Task<LoginResponseDto> LoginAsync(LoginRequestDto loginRequest)
+    {
+        try
         {
-            // Validate unique email
-            if (await _context.Users.AnyAsync(u => u.Email == user.Email))
+            _logger.LogInformation($"🔐 LOGIN ATTEMPT - Email: {loginRequest.Email}");
+
+            // Validaciones existentes...
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email == loginRequest.Email);
+
+            if (user == null)
             {
-                throw new InvalidOperationException("Email already exists");
+                _logger.LogWarning($"❌ USER NOT FOUND: {loginRequest.Email}");
+                return new LoginResponseDto { Success = false, Message = "Invalid credentials" };
             }
 
-            // Hash password
-            user.Password = BCrypt.Net.BCrypt.HashPassword(user.Password);
-    
-            // Set created date
-            user.CreatedAt = DateTime.UtcNow;
+            _logger.LogInformation($"✅ USER FOUND - UserId: {user.UserId}, Email: {user.Email}");
 
-            _context.Users.Add(user);
-            await _context.SaveChangesAsync();
+            // Verificar contraseña
+            var isPasswordValid = BCrypt.Net.BCrypt.Verify(loginRequest.Password, user.Password);
+            _logger.LogInformation($"🔑 PASSWORD VERIFICATION RESULT: {isPasswordValid}");
 
-            return user;
-        }
+            if (!isPasswordValid) return new LoginResponseDto { Success = false, Message = "Invalid credentials" };
 
-        public async Task<bool> ValidateUserAsync(string email, string password)
-        {
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email);
-            if (user == null) return false;
+            // Generar token
+            var token = GenerateJwtToken(user);
 
-            return BCrypt.Net.BCrypt.Verify(password, user.Password);
-        }
+            // DEBUG: Mostrar el token generado (solo en desarrollo)
+#if DEBUG
+            _logger.LogInformation($"🔐 TOKEN GENERATED - Length: {token.Length}");
+#endif
 
-        public string GenerateJwtToken(User user)
-        {
-            var jwtSettings = _config.GetSection("Jwt");
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Key"]!));
-            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+            _logger.LogInformation($"🎉 SUCCESSFUL LOGIN - User: {user.Email}, UserId: {user.UserId}");
 
-            var claims = new[]
+            return new LoginResponseDto
             {
-                new Claim(ClaimTypes.NameIdentifier, user.UserId.ToString()),
-        
-                new Claim("uid", user.UserId.ToString()),
-                new Claim("userId", user.UserId.ToString()),
-        
-                new Claim(ClaimTypes.Name, user.Email),
-                new Claim(ClaimTypes.Email, user.Email),
-        
-                new Claim(JwtRegisteredClaimNames.Sub, user.UserId.ToString()),
-        
-                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+                Success = true,
+                Message = "Login successful",
+                Token = token,
+                User = new UserResponseDto
+                {
+                    UserId = user.UserId,
+                    Email = user.Email,
+                    ProfileImage = user.ProfileImage,
+                    CreatedAt = user.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")
+                }
             };
-
-            var token = new JwtSecurityToken(
-                issuer: jwtSettings["Issuer"],
-                audience: jwtSettings["Audience"],
-                claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(Convert.ToDouble(jwtSettings["DurationInMinutes"])),
-                signingCredentials: creds
-            );
-
-            return new JwtSecurityTokenHandler().WriteToken(token);
         }
-
-        private bool IsValidEmail(string email)
+        catch (Exception ex)
         {
-            try
+            _logger.LogError(ex, $"💥 ERROR DURING LOGIN for {loginRequest.Email}");
+            return new LoginResponseDto
             {
-                var addr = new System.Net.Mail.MailAddress(email);
-                return addr.Address == email;
-            }
-            catch
-            {
-                return false;
-            }
+                Success = false,
+                Message = "An error occurred during login"
+            };
+        }
+    }
+
+    public async Task<User> RegisterAsync(User user)
+    {
+        // Validate unique email
+        if (await _context.Users.AnyAsync(u => u.Email == user.Email))
+            throw new InvalidOperationException("Email already exists");
+
+        // Hash password
+        user.Password = BCrypt.Net.BCrypt.HashPassword(user.Password);
+
+        // Set created date
+        user.CreatedAt = DateTime.UtcNow;
+
+        _context.Users.Add(user);
+        await _context.SaveChangesAsync();
+
+        return user;
+    }
+
+    public async Task<bool> ValidateUserAsync(string email, string password)
+    {
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email);
+        if (user == null) return false;
+
+        return BCrypt.Net.BCrypt.Verify(password, user.Password);
+    }
+
+    public string GenerateJwtToken(User user)
+    {
+        var jwtSettings = _config.GetSection("Jwt");
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Key"]!));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, user.UserId.ToString()),
+
+            new Claim("uid", user.UserId.ToString()),
+            new Claim("userId", user.UserId.ToString()),
+
+            new Claim(ClaimTypes.Name, user.Email),
+            new Claim(ClaimTypes.Email, user.Email),
+
+            new Claim(JwtRegisteredClaimNames.Sub, user.UserId.ToString()),
+
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        };
+
+        var token = new JwtSecurityToken(
+            jwtSettings["Issuer"],
+            jwtSettings["Audience"],
+            claims,
+            expires: DateTime.UtcNow.AddMinutes(Convert.ToDouble(jwtSettings["DurationInMinutes"])),
+            signingCredentials: creds
+        );
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    private bool IsValidEmail(string email)
+    {
+        try
+        {
+            var addr = new MailAddress(email);
+            return addr.Address == email;
+        }
+        catch
+        {
+            return false;
         }
     }
 }

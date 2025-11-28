@@ -1,90 +1,89 @@
 ﻿using SkillShareBackend.DTOs;
 
-namespace SkillShareBackend.Services
+namespace SkillShareBackend.Services;
+
+/// <summary>
+///     Defines all operations related to managing study groups,
+///     including permissions, member management, ownership transfer, and statistics.
+/// </summary>
+public interface IGroupManagementService
 {
+    #region Ownership Management
+
     /// <summary>
-    /// Defines all operations related to managing study groups,
-    /// including permissions, member management, ownership transfer, and statistics.
+    ///     Transfers ownership of a group to another member.
+    ///     Ensures the new owner is a member and updates role to admin.
     /// </summary>
-    public interface IGroupManagementService
-    {
-        #region Permission Checks
+    Task<bool> TransferOwnership(int groupId, int newOwnerId, int currentOwnerId);
 
-        /// <summary>
-        /// Checks if a given user is an admin of a specific group.
-        /// </summary>
-        Task<bool> IsGroupAdmin(int groupId, int userId);
+    #endregion
 
-        /// <summary>
-        /// Checks if a given user is the owner (creator) of a specific group.
-        /// </summary>
-        Task<bool> IsGroupOwner(int groupId, int userId);
+    #region Statistics
 
-        /// <summary>
-        /// Determines if a user can manage members of a specific group.
-        /// Typically true for admins or owners.
-        /// </summary>
-        Task<bool> CanManageMembers(int groupId, int userId);
+    /// <summary>
+    ///     Retrieves statistics for a specific group including total members,
+    ///     admin/member counts, total messages, and last activity.
+    /// </summary>
+    Task<GroupStatisticsDto> GetGroupStatistics(int groupId);
 
-        /// <summary>
-        /// Retrieves all permissions for a specific user in a group.
-        /// </summary>
-        Task<GroupPermissionsDto> GetUserPermissions(int groupId, int userId);
+    #endregion
 
-        /// <summary>
-        /// Checks if a user has permission to edit the group.
-        /// </summary>
-        Task<bool> CanUserEditGroup(int groupId, int userId);
+    #region Permission Checks
 
-        /// <summary>
-        /// Checks if a user has permission to delete the group.
-        /// </summary>
-        Task<bool> CanUserDeleteGroup(int groupId, int userId);
+    /// <summary>
+    ///     Checks if a given user is an admin of a specific group.
+    /// </summary>
+    Task<bool> IsGroupAdmin(int groupId, int userId);
 
-        #endregion
+    /// <summary>
+    ///     Checks if a given user is the owner (creator) of a specific group.
+    /// </summary>
+    Task<bool> IsGroupOwner(int groupId, int userId);
 
-        #region Member Management
+    /// <summary>
+    ///     Determines if a user can manage members of a specific group.
+    ///     Typically true for admins or owners.
+    /// </summary>
+    Task<bool> CanManageMembers(int groupId, int userId);
 
-        /// <summary>
-        /// Promotes a member to admin. Only the owner can perform this action.
-        /// </summary>
-        Task<bool> PromoteToAdmin(int groupId, int targetUserId, int requestingUserId);
+    /// <summary>
+    ///     Retrieves all permissions for a specific user in a group.
+    /// </summary>
+    Task<GroupPermissionsDto> GetUserPermissions(int groupId, int userId);
 
-        /// <summary>
-        /// Demotes an admin to a regular member. Only the owner can perform this action.
-        /// </summary>
-        Task<bool> DemoteToMember(int groupId, int targetUserId, int requestingUserId);
+    /// <summary>
+    ///     Checks if a user has permission to edit the group.
+    /// </summary>
+    Task<bool> CanUserEditGroup(int groupId, int userId);
 
-        /// <summary>
-        /// Removes a member from the group. Validates permissions and ownership rules.
-        /// </summary>
-        Task<bool> RemoveMember(int groupId, int targetUserId, int requestingUserId);
+    /// <summary>
+    ///     Checks if a user has permission to delete the group.
+    /// </summary>
+    Task<bool> CanUserDeleteGroup(int groupId, int userId);
 
-        /// <summary>
-        /// Removes multiple members from a group. Returns a list of successfully removed user IDs.
-        /// </summary>
-        Task<List<int>> BulkRemoveMembers(int groupId, List<int> userIds, int requestingUserId);
+    #endregion
 
-        #endregion
+    #region Member Management
 
-        #region Ownership Management
+    /// <summary>
+    ///     Promotes a member to admin. Only the owner can perform this action.
+    /// </summary>
+    Task<bool> PromoteToAdmin(int groupId, int targetUserId, int requestingUserId);
 
-        /// <summary>
-        /// Transfers ownership of a group to another member.
-        /// Ensures the new owner is a member and updates role to admin.
-        /// </summary>
-        Task<bool> TransferOwnership(int groupId, int newOwnerId, int currentOwnerId);
+    /// <summary>
+    ///     Demotes an admin to a regular member. Only the owner can perform this action.
+    /// </summary>
+    Task<bool> DemoteToMember(int groupId, int targetUserId, int requestingUserId);
 
-        #endregion
+    /// <summary>
+    ///     Removes a member from the group. Validates permissions and ownership rules.
+    /// </summary>
+    Task<bool> RemoveMember(int groupId, int targetUserId, int requestingUserId);
 
-        #region Statistics
+    /// <summary>
+    ///     Removes multiple members from a group. Returns a list of successfully removed user IDs.
+    /// </summary>
+    Task<List<int>> BulkRemoveMembers(int groupId, List<int> userIds, int requestingUserId);
 
-        /// <summary>
-        /// Retrieves statistics for a specific group including total members,
-        /// admin/member counts, total messages, and last activity.
-        /// </summary>
-        Task<GroupStatisticsDto> GetGroupStatistics(int groupId);
-
-        #endregion
-    }
+    #endregion
 }

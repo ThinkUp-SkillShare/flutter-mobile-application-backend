@@ -1,19 +1,19 @@
 ﻿using System.Security.Claims;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using SkillShareBackend.Data;
 using SkillShareBackend.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+builder.Environment.WebRootPath = Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Add CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll",
@@ -25,14 +25,12 @@ builder.Services.AddCors(options =>
         });
 });
 
-// Add DbContext
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(
         builder.Configuration.GetConnectionString("DefaultConnection"),
         ServerVersion.AutoDetect(builder.Configuration.GetConnectionString("DefaultConnection"))
     ));
 
-// ✅ AGREGAR CONFIGURACIÓN JWT AUTHENTICATION
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -48,8 +46,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"])),
             NameClaimType = ClaimTypes.NameIdentifier
         };
-        
-        // Opcional: para debugging
+
         options.Events = new JwtBearerEvents
         {
             OnAuthenticationFailed = context =>
@@ -69,25 +66,38 @@ builder.Services.AddAuthorization();
 
 // Add Services
 builder.Services.AddScoped<IAuthService, AuthService>();
-builder.Services.AddScoped<IStudentService, StudentService>(); 
+builder.Services.AddScoped<IStudentService, StudentService>();
 builder.Services.AddScoped<IGroupManagementService, GroupManagementService>();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+var wwwrootPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+if (!Directory.Exists(wwwrootPath))
+{
+    Directory.CreateDirectory(wwwrootPath);
+    Console.WriteLine($"✅ Created wwwroot directory: {wwwrootPath}");
+}
+
+var uploadsPath = Path.Combine(wwwrootPath, "uploads", "documents");
+if (!Directory.Exists(uploadsPath))
+{
+    Directory.CreateDirectory(uploadsPath);
+    Console.WriteLine($"✅ Created uploads directory: {uploadsPath}");
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-// USAR CORS - debe estar al inicio
 app.UseCors("AllowAll");
 
 app.UseHttpsRedirection();
 
-// ✅ AGREGAR AUTENTICACIÓN ANTES DE AUTORIZACIÓN
-app.UseAuthentication(); // ← ESTE ES EL QUE FALTABA
+app.UseStaticFiles();
+
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
@@ -96,6 +106,22 @@ app.Map("/ws/{groupId}", async (HttpContext context, int groupId) =>
 {
     var handler = new WebSocketHandler();
     await handler.HandleWebSocket(context, groupId);
+});
+
+app.MapGet("/api/test-static-files", () =>
+{
+    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "documents");
+    var exists = Directory.Exists(uploadsDir);
+    var files = exists ? Directory.GetFiles(uploadsDir).Length : 0;
+
+    return new
+    {
+        uploadsDirectoryExists = exists,
+        currentDirectory = Directory.GetCurrentDirectory(),
+        wwwrootPath = app.Environment.WebRootPath,
+        uploadsPath = uploadsDir,
+        totalFiles = files
+    };
 });
 
 app.Run();
