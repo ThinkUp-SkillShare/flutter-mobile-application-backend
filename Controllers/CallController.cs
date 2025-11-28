@@ -261,7 +261,7 @@ public class CallsController : ControllerBase
                 participants = activeCall.Participants.Select(p => new
                 {
                     userId = p.UserId,
-                    joinedAt = p.JoinedAt // CORREGIDO: 'JointedAt' → 'JoinedAt'
+                    joinedAt = p.JoinedAt 
                 })
             });
         }
@@ -278,7 +278,6 @@ public class CallsController : ControllerBase
         {
             var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
 
-            // Verificar si el usuario es miembro del grupo
             var groupMember = await _context.GroupMembers
                 .FirstOrDefaultAsync(gm => gm.GroupId == groupId && gm.UserId == userId);
 
