@@ -19,7 +19,7 @@ public class AppDbContext : DbContext
     public DbSet<MessageReaction> MessageReactions { get; set; }
     public DbSet<MessageReadStatus> MessageReadStatuses { get; set; }
 
-    public DbSet<GroupCall> GroupCalls { get; set; }
+    public DbSet<Call> GroupCalls { get; set; }
     public DbSet<CallParticipant> CallParticipants { get; set; }
     public DbSet<CallStatistics> CallStatistics { get; set; }
 
@@ -29,20 +29,78 @@ public class AppDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
 
-        modelBuilder.Entity<GroupCall>()
-            .HasAlternateKey(gc => gc.CallId);
+        // Configuración para Call (GROUP_CALLS)
+        modelBuilder.Entity<Call>(entity =>
+        {
+            entity.ToTable("GROUP_CALLS");
+            entity.HasKey(c => c.Id).HasName("PRIMARY");
+            entity.Property(c => c.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            entity.Property(c => c.CallId).HasColumnName("call_id").IsRequired().HasMaxLength(100);
+            entity.Property(c => c.GroupId).HasColumnName("group_id").IsRequired();
+            entity.Property(c => c.StartedBy).HasColumnName("started_by").IsRequired().HasMaxLength(100);
+            entity.Property(c => c.StartedAt).HasColumnName("started_at").IsRequired();
+            entity.Property(c => c.EndedAt).HasColumnName("ended_at");
+            entity.Property(c => c.EndedBy).HasColumnName("ended_by").HasMaxLength(100);
+            entity.Property(c => c.IsActive).HasColumnName("is_active").HasDefaultValue(true);
+            entity.Property(c => c.ParticipantCount).HasColumnName("participant_count").HasDefaultValue(0);
 
-        modelBuilder.Entity<CallParticipant>()
-            .HasOne(cp => cp.GroupCall)
-            .WithMany(gc => gc.Participants)
-            .HasForeignKey(cp => cp.CallId)
-            .HasPrincipalKey(gc => gc.CallId);
+            entity.HasIndex(c => c.CallId).IsUnique().HasDatabaseName("IX_Call_CallId");
+            entity.HasIndex(c => new { c.GroupId, c.IsActive }).HasDatabaseName("IX_Call_GroupId_IsActive");
 
-        modelBuilder.Entity<CallStatistics>()
-            .HasOne(cs => cs.GroupCall)
-            .WithMany()
-            .HasForeignKey(cs => cs.CallId)
-            .HasPrincipalKey(gc => gc.CallId);
+            entity.HasOne(c => c.Group)
+                .WithMany()
+                .HasForeignKey(c => c.GroupId)
+                .HasConstraintName("FK_Call_Group")
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Configuración para CallParticipant
+        modelBuilder.Entity<CallParticipant>(entity =>
+        {
+            entity.ToTable("CALL_PARTICIPANTS");
+            entity.HasKey(cp => cp.Id).HasName("PRIMARY");
+            entity.Property(cp => cp.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            entity.Property(cp => cp.CallId).HasColumnName("call_id").IsRequired().HasMaxLength(100);
+            entity.Property(cp => cp.UserId).HasColumnName("user_id").IsRequired().HasMaxLength(100);
+            entity.Property(cp => cp.JoinedAt).HasColumnName("joined_at").IsRequired();
+            entity.Property(cp => cp.LeftAt).HasColumnName("left_at");
+
+            entity.HasIndex(cp => new { cp.CallId, cp.UserId }).HasDatabaseName("IX_CallParticipant_CallId_UserId");
+
+            entity.HasOne(cp => cp.Call)
+                .WithMany(c => c.Participants)
+                .HasForeignKey(cp => cp.CallId)
+                .HasPrincipalKey(c => c.CallId)
+                .HasConstraintName("FK_CallParticipant_Call")
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Configuración para CallStatistics
+        modelBuilder.Entity<CallStatistics>(entity =>
+        {
+            entity.ToTable("CALL_STATISTICS");
+            entity.HasKey(cs => cs.Id).HasName("PRIMARY");
+            entity.Property(cs => cs.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            entity.Property(cs => cs.CallId).HasColumnName("call_id").IsRequired().HasMaxLength(100);
+            entity.Property(cs => cs.GroupId).HasColumnName("group_id").IsRequired();
+            entity.Property(cs => cs.TotalParticipants).HasColumnName("total_participants").HasDefaultValue(0);
+            entity.Property(cs => cs.AverageDuration).HasColumnName("average_duration").HasDefaultValue(0);
+            entity.Property(cs => cs.MaxParticipants).HasColumnName("max_participants").HasDefaultValue(0);
+            entity.Property(cs => cs.CreatedAt).HasColumnName("created_at").IsRequired();
+
+            entity.HasOne(cs => cs.Call)
+                .WithMany()
+                .HasForeignKey(cs => cs.CallId)
+                .HasPrincipalKey(c => c.CallId)
+                .HasConstraintName("FK_CallStatistics_Call")
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(cs => cs.Group)
+                .WithMany()
+                .HasForeignKey(cs => cs.GroupId)
+                .HasConstraintName("FK_CallStatistics_Group")
+                .OnDelete(DeleteBehavior.Cascade);
+        });
 
         // Configuración para User
         modelBuilder.Entity<User>(entity =>

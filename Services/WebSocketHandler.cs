@@ -1,134 +1,306 @@
-﻿using System.Net.WebSockets;
-using System.Security.Claims;
+﻿using System.Collections.Concurrent;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection; // Necesario para ScopeFactory
+using Microsoft.EntityFrameworkCore;
+using SkillShareBackend.Data;
+using SkillShareBackend.Models;
 
 namespace SkillShareBackend.Services;
 
 public class WebSocketHandler
 {
-    private static readonly Dictionary<string, List<WebSocket>> _sessions = new();
-    private static readonly Dictionary<string, string> _userSessions = new();
+    // Necesitamos ScopeFactory porque WebSocketHandler es Singleton y DbContext es Scoped
+    private readonly IServiceScopeFactory _scopeFactory;
+    
+    private static readonly ConcurrentDictionary<string, List<WebSocketConnection>> _callSessions = new();
+    private static readonly ConcurrentDictionary<string, string> _userCallSessions = new();
 
-    public async Task HandleWebSocket(HttpContext context, int groupId)
+    public WebSocketHandler(IServiceScopeFactory scopeFactory)
     {
-        if (context.WebSockets.IsWebSocketRequest)
-        {
-            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-            var userId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-
-            if (string.IsNullOrEmpty(userId))
-            {
-                context.Response.StatusCode = 401;
-                return;
-            }
-
-            await HandleConnection(webSocket, groupId.ToString(), userId);
-        }
-        else
-        {
-            context.Response.StatusCode = 400;
-        }
+        _scopeFactory = scopeFactory;
     }
 
-    private async Task HandleConnection(WebSocket webSocket, string sessionId, string userId)
+    public async Task HandleCallWebSocket(HttpContext context, string callId)
     {
-        // Registrar conexión en la sesión
-        if (!_sessions.ContainsKey(sessionId)) _sessions[sessionId] = new List<WebSocket>();
-        _sessions[sessionId].Add(webSocket);
-        _userSessions[userId] = sessionId;
+        if (!context.WebSockets.IsWebSocketRequest)
+        {
+            context.Response.StatusCode = 400;
+            return;
+        }
 
-        Console.WriteLine($"User {userId} joined session {sessionId}. Total connections: {_sessions[sessionId].Count}");
+        var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+        var userId = context.Request.Query["userId"].ToString();
+        
+        if (string.IsNullOrEmpty(userId))
+            userId = context.User?.Identity?.Name;
+
+        if (string.IsNullOrEmpty(userId))
+        {
+            Console.WriteLine("❌ No user ID provided for WebSocket connection");
+            await webSocket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "User ID required", CancellationToken.None);
+            return;
+        }
+
+        await HandleCallConnection(webSocket, callId, userId);
+    }
+
+    private async Task HandleCallConnection(WebSocket webSocket, string callId, string userId)
+    {
+        var connection = new WebSocketConnection
+        {
+            WebSocket = webSocket,
+            UserId = userId,
+            CallId = callId,
+            ConnectedAt = DateTime.UtcNow
+        };
+
+        if (!_callSessions.ContainsKey(callId)) _callSessions[callId] = new List<WebSocketConnection>();
+        _callSessions[callId].Add(connection);
+        _userCallSessions[userId] = callId;
+
+        // Actualizar BD al conectarse
+        await UpdateCallParticipantCount(callId, _callSessions[callId].Count);
+
+        Console.WriteLine($"✅ User {userId} connected to call {callId}. Total connections: {_callSessions[callId].Count}");
+
+        // Notificar a OTROS usuarios (user-joined)
+        // Importante: El cliente receptor debe usar este ID para iniciar la oferta WebRTC
+        await BroadcastToCallOthers(callId, connection, new
+        {
+            type = "user-joined",
+            data = new { userId },
+            callId,
+            senderId = userId,
+            timestamp = DateTime.UtcNow.Ticks
+        });
 
         try
         {
-            var buffer = new byte[1024 * 4];
+            var buffer = new byte[1024 * 16]; 
             while (webSocket.State == WebSocketState.Open)
             {
-                var result = await webSocket.ReceiveAsync(
-                    new ArraySegment<byte>(buffer), CancellationToken.None);
-
+                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
                     var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    Console.WriteLine($"Received message from user {userId}: {message}");
-
-                    // Reenviar mensaje a todos los demás en la misma sesión
-                    await BroadcastToOthers(sessionId, webSocket, message, userId);
+                    await ProcessCallMessage(callId, connection, message);
                 }
                 else if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    await HandleUserDisconnection(connection);
                     break;
                 }
             }
         }
-        finally
+        catch (Exception ex)
         {
-            _sessions[sessionId].Remove(webSocket);
-            _userSessions.Remove(userId);
-
-            if (_sessions[sessionId].Count == 0) _sessions.Remove(sessionId);
-
-            Console.WriteLine(
-                $"User {userId} left session {sessionId}. Remaining connections: {(_sessions.ContainsKey(sessionId) ? _sessions[sessionId].Count : 0)}");
-
-            await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure,
-                "Connection closed", CancellationToken.None);
+            Console.WriteLine($"❌ Error/Disconnect for user {userId}: {ex.Message}");
+            await HandleUserDisconnection(connection);
         }
     }
 
-    private async Task BroadcastToOthers(string sessionId, WebSocket sender, string message, string senderUserId)
+    private async Task ProcessCallMessage(string callId, WebSocketConnection sender, string message)
     {
-        if (_sessions.ContainsKey(sessionId))
+        try
         {
-            var tasks = _sessions[sessionId]
-                .Where(ws => ws != sender && ws.State == WebSocketState.Open)
-                .Select(ws =>
+            var messageData = JsonSerializer.Deserialize<JsonElement>(message);
+            if (!messageData.TryGetProperty("type", out var typeProperty)) return;
+
+            var messageType = typeProperty.GetString();
+            
+            // Lógica para routing de mensajes WebRTC (P2P Signaling)
+            // Si el mensaje tiene un 'targetUserId', deberíamos enviarlo solo a ese usuario.
+            // Para simplificar y mantener compatibilidad con Mesh actual, hacemos broadcast,
+            // pero el cliente debe filtrar si el mensaje es para él.
+            
+            JsonElement payload;
+            if (messageData.TryGetProperty("data", out var dataProp)) payload = dataProp;
+            else if (messageType == "offer") payload = messageData.GetProperty("offer");
+            else if (messageType == "answer") payload = messageData.GetProperty("answer");
+            else if (messageType == "ice-candidate") payload = messageData.GetProperty("candidate");
+            else payload = messageData;
+
+            // Extraer targetUserId si existe (para dirigir la señalización)
+            string targetUserId = null;
+            if (messageData.TryGetProperty("targetUserId", out var targetProp))
+            {
+                targetUserId = targetProp.GetString();
+            }
+
+            var enhancedMessage = new
+            {
+                type = messageType,
+                data = payload,
+                callId,
+                senderId = sender.UserId,
+                targetUserId = targetUserId, // Reenviar el target
+                timestamp = DateTime.UtcNow.Ticks
+            };
+
+            // Switch simplificado
+            switch (messageType)
+            {
+                case "offer":
+                case "answer":
+                case "ice-candidate":
+                    // Señalización WebRTC siempre va a los demas
+                    await BroadcastToCallOthers(callId, sender, enhancedMessage);
+                    break;
+
+                case "user-joined":
+                case "user-left":
+                    await BroadcastToCallAll(callId, enhancedMessage);
+                    break;
+                    
+                default:
+                    // Mensajes genéricos (chat, mute status, etc)
+                    await BroadcastToCallOthers(callId, sender, enhancedMessage);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error processing message: {ex.Message}");
+        }
+    }
+
+    private async Task HandleUserDisconnection(WebSocketConnection connection)
+    {
+        var callId = connection.CallId;
+        var userId = connection.UserId;
+        bool removed = false;
+
+        if (_callSessions.ContainsKey(callId))
+        {
+            lock (_callSessions[callId]) 
+            {
+                removed = _callSessions[callId].Remove(connection);
+            }
+        }
+        
+        _userCallSessions.TryRemove(userId, out _);
+
+        if (removed)
+        {
+             // Actualizar BD
+            int remainingCount = _callSessions.ContainsKey(callId) ? _callSessions[callId].Count : 0;
+            await UpdateCallParticipantCount(callId, remainingCount);
+            
+            Console.WriteLine($"👤 User {userId} disconnected. Remaining: {remainingCount}");
+
+            if (remainingCount == 0)
+            {
+                _callSessions.TryRemove(callId, out _);
+                Console.WriteLine($"🗑️ Call session {callId} removed (empty)");
+                // Opcional: Marcar IsActive=false en DB si todos salen
+                await UpdateCallStatus(callId, false); 
+            }
+            else
+            {
+                await BroadcastToCallAll(callId, new
                 {
-                    try
-                    {
-                        // Agregar información del remitente al mensaje
-                        var messageObj = JsonSerializer.Deserialize<JsonElement>(message);
-                        var messageWithSender = new Dictionary<string, object>
-                        {
-                            ["type"] = messageObj.GetProperty("type").GetString(),
-                            ["data"] = messageObj,
-                            ["senderId"] = senderUserId,
-                            ["timestamp"] = DateTime.UtcNow
-                        };
-
-                        var jsonMessage = JsonSerializer.Serialize(messageWithSender);
-                        var buffer = Encoding.UTF8.GetBytes(jsonMessage);
-
-                        return ws.SendAsync(
-                            new ArraySegment<byte>(buffer),
-                            WebSocketMessageType.Text,
-                            true,
-                            CancellationToken.None);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error sending message: {ex.Message}");
-                        return Task.CompletedTask;
-                    }
+                    type = "user-left",
+                    data = new { userId },
+                    callId,
+                    senderId = userId,
+                    timestamp = DateTime.UtcNow.Ticks
                 });
+            }
+        }
 
-            await Task.WhenAll(tasks);
+        try
+        {
+            if (connection.WebSocket.State == WebSocketState.Open || 
+                connection.WebSocket.State == WebSocketState.CloseReceived)
+            {
+                await connection.WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed", CancellationToken.None);
+            }
+        }
+        catch { /* Ignorar error de cierre */ }
+    }
+
+    // Método helper para actualizar BD
+    private async Task UpdateCallParticipantCount(string callId, int count)
+    {
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var call = await dbContext.GroupCalls.FirstOrDefaultAsync(c => c.CallId == callId);
+            if (call != null)
+            {
+                call.ParticipantCount = count;
+                await dbContext.SaveChangesAsync();
+            }
         }
     }
 
-    public static int GetConnectionCount(string sessionId)
+    private async Task UpdateCallStatus(string callId, bool isActive)
     {
-        return _sessions.ContainsKey(sessionId) ? _sessions[sessionId].Count : 0;
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var call = await dbContext.GroupCalls.FirstOrDefaultAsync(c => c.CallId == callId);
+            if (call != null)
+            {
+                call.IsActive = isActive;
+                if (!isActive) call.EndedAt = DateTime.UtcNow;
+                await dbContext.SaveChangesAsync();
+            }
+        }
     }
 
-    public static List<string> GetActiveSessions()
+    // ... (Mantener BroadcastToCallOthers y BroadcastToCallAll igual, son genéricos)
+    private async Task BroadcastToCallOthers(string callId, WebSocketConnection sender, object message)
     {
-        return _sessions.Keys.ToList();
+        if (!_callSessions.ContainsKey(callId)) return;
+        var messageJson = JsonSerializer.Serialize(message);
+        var messageBytes = Encoding.UTF8.GetBytes(messageJson);
+
+        // Copiar lista para iterar seguro
+        var connections = _callSessions[callId].Where(c => c.UserId != sender.UserId).ToList();
+
+        foreach (var conn in connections)
+        {
+            if (conn.WebSocket.State == WebSocketState.Open)
+                await conn.WebSocket.SendAsync(new ArraySegment<byte>(messageBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+        }
     }
 
-    public static int GetTotalConnections()
+    private async Task BroadcastToCallAll(string callId, object message)
     {
-        return _sessions.Values.Sum(session => session.Count);
+        if (!_callSessions.ContainsKey(callId)) return;
+        var messageJson = JsonSerializer.Serialize(message);
+        var messageBytes = Encoding.UTF8.GetBytes(messageJson);
+
+        var connections = _callSessions[callId].ToList();
+        foreach (var conn in connections)
+        {
+             if (conn.WebSocket.State == WebSocketState.Open)
+                await conn.WebSocket.SendAsync(new ArraySegment<byte>(messageBytes), WebSocketMessageType.Text, true, CancellationToken.None);
+        }
+    }
+
+    public static int GetCallParticipantCount(string callId)
+    {
+        return _callSessions.TryGetValue(callId, out var connections) ? connections.Count : 0;
+    }
+
+    public static void CleanupCall(string callId)
+    {
+        if (_callSessions.TryRemove(callId, out var connections))
+        {
+            foreach(var conn in connections) conn.WebSocket.Abort();
+        }
+    }
+    
+    public class WebSocketConnection
+    {
+        public WebSocket WebSocket { get; set; } = null!;
+        public string UserId { get; set; } = string.Empty;
+        public string CallId { get; set; } = string.Empty;
+        public DateTime ConnectedAt { get; set; }
     }
 }

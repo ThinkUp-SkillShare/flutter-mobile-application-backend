@@ -1,11 +1,7 @@
 ﻿using System.Security.Claims;
-using System.Text;
-using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using SkillShareBackend.Data;
-using SkillShareBackend.Models;
+using SkillShareBackend.Services;
 
 namespace SkillShareBackend.Controllers;
 
@@ -14,12 +10,11 @@ namespace SkillShareBackend.Controllers;
 [Authorize]
 public class CallsController : ControllerBase
 {
-    private static readonly Dictionary<string, CallSession> _activeCalls = new();
-    private readonly AppDbContext _context;
+    private readonly ICallService _callService;
 
-    public CallsController(AppDbContext context)
+    public CallsController(ICallService callService)
     {
-        _context = context;
+        _callService = callService;
     }
 
     [HttpPost("create-room")]
@@ -27,152 +22,26 @@ public class CallsController : ControllerBase
     {
         try
         {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-
-            var groupMember = await _context.GroupMembers
-                .FirstOrDefaultAsync(gm => gm.GroupId == request.GroupId && gm.UserId == userId);
-            if (groupMember == null) return Unauthorized("You are not a member of this group");
-
-            var group = await _context.StudyGroups.FindAsync(request.GroupId);
-            if (group == null) return NotFound("Group not found");
-
-            var callId = Guid.NewGuid().ToString();
-            var callSession = new CallSession
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (string.IsNullOrEmpty(userId))
             {
-                CallId = callId,
-                GroupId = request.GroupId,
-                CreatedBy = userId,
-                CreatedAt = DateTime.UtcNow,
-                IsActive = true,
-                Participants = new List<SessionParticipant>
-                {
-                    new() { UserId = userId, JoinedAt = DateTime.UtcNow }
-                }
-            };
-            _activeCalls[callId] = callSession;
-
-            var callRecord = new GroupCall
-            {
-                CallId = callId,
-                GroupId = request.GroupId,
-                StartedBy = userId,
-                StartedAt = DateTime.UtcNow,
-                IsActive = true
-            };
-            _context.GroupCalls.Add(callRecord);
-
-            var participantRecord = new CallParticipant
-            {
-                CallId = callId,
-                UserId = userId,
-                JoinedAt = DateTime.UtcNow
-            };
-            _context.CallParticipants.Add(participantRecord);
-
-            await _context.SaveChangesAsync();
-
-            return Ok(new
-            {
-                callId,
-                success = true,
-                message = "Call room created successfully"
-            });
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { error = $"Error creating call room: {ex.Message}" });
-        }
-    }
-
-    [HttpPost("get-token")]
-    public async Task<IActionResult> GetCallToken([FromBody] CreateCallRequest request)
-    {
-        try
-        {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-
-            var groupMember = await _context.GroupMembers
-                .FirstOrDefaultAsync(gm => gm.GroupId == request.GroupId && gm.UserId == userId);
-            if (groupMember == null) return Unauthorized("You are not a member of this group");
-
-            var tokenData = new
-            {
-                userId,
-                groupId = request.GroupId,
-                timestamp = DateTime.UtcNow.Ticks,
-                expires = DateTime.UtcNow.AddHours(1).Ticks
-            };
-
-            var token = Convert.ToBase64String(
-                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(tokenData))
-            );
-
-            return Ok(new
-            {
-                token,
-                stunServers = new[]
-                {
-                    new { urls = "stun:stun.l.google.com:19302" },
-                    new { urls = "stun:stun1.l.google.com:19302" }
-                },
-                turnServers = new[]
-                {
-                    new
-                    {
-                        urls = "turn:your-turn-server.com:3478",
-                        username = "username",
-                        credential = "password"
-                    }
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { error = $"Error getting call token: {ex.Message}" });
-        }
-    }
-
-    [HttpPost("end-call")]
-    public async Task<IActionResult> EndCall([FromBody] EndCallRequest request)
-    {
-        try
-        {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-
-            var activeCall = _activeCalls.Values.FirstOrDefault(c =>
-                c.GroupId == request.GroupId && c.IsActive);
-
-            if (activeCall != null)
-            {
-                activeCall.IsActive = false;
-                activeCall.EndedAt = DateTime.UtcNow;
-
-                var callRecord = await _context.GroupCalls
-                    .FirstOrDefaultAsync(c => c.CallId == activeCall.CallId && c.IsActive);
-
-                if (callRecord != null)
-                {
-                    callRecord.IsActive = false;
-                    callRecord.EndedAt = DateTime.UtcNow;
-
-                    var activeParticipants = await _context.CallParticipants
-                        .Where(cp => cp.CallId == activeCall.CallId && cp.LeftAt == null)
-                        .ToListAsync();
-
-                    foreach (var participant in activeParticipants)
-                        participant.LeftAt = DateTime.UtcNow;
-
-                    await _context.SaveChangesAsync();
-                }
-
-                _activeCalls.Remove(activeCall.CallId);
+                return Unauthorized(new { success = false, message = "User not authenticated" });
             }
 
-            return Ok(new { success = true, message = "Call ended successfully" });
+            var result = await _callService.CreateCallRoom(request.GroupId, userId);
+            
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+            
+            return BadRequest(result);
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = $"Error ending call: {ex.Message}" });
+            Console.WriteLine($"❌ Error in CreateCallRoom: {ex.Message}");
+            return StatusCode(500, new { success = false, error = ex.Message });
         }
     }
 
@@ -181,48 +50,26 @@ public class CallsController : ControllerBase
     {
         try
         {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-
-            var activeCall = _activeCalls.Values.FirstOrDefault(c =>
-                c.GroupId == request.GroupId && c.IsActive);
-            if (activeCall == null) return NotFound(new { error = "No active call found for this group" });
-
-            var groupMember = await _context.GroupMembers
-                .FirstOrDefaultAsync(gm => gm.GroupId == request.GroupId && gm.UserId == userId);
-            if (groupMember == null) return Unauthorized("You are not a member of this group");
-
-            if (!activeCall.Participants.Any(p => p.UserId == userId))
-                activeCall.Participants.Add(new SessionParticipant
-                {
-                    UserId = userId,
-                    JoinedAt = DateTime.UtcNow
-                });
-
-            var existingParticipant = await _context.CallParticipants
-                .FirstOrDefaultAsync(cp => cp.CallId == activeCall.CallId && cp.UserId == userId && cp.LeftAt == null);
-
-            if (existingParticipant == null)
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (string.IsNullOrEmpty(userId))
             {
-                var participantRecord = new CallParticipant
-                {
-                    CallId = activeCall.CallId,
-                    UserId = userId,
-                    JoinedAt = DateTime.UtcNow
-                };
-                _context.CallParticipants.Add(participantRecord);
-                await _context.SaveChangesAsync();
+                return Unauthorized(new { success = false, message = "User not authenticated" });
             }
 
-            return Ok(new
+            var result = await _callService.JoinCall(request.GroupId, userId);
+            
+            if (result.Success)
             {
-                callId = activeCall.CallId,
-                success = true,
-                message = "Joined call successfully"
-            });
+                return Ok(result);
+            }
+            
+            return BadRequest(result);
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = $"Error joining call: {ex.Message}" });
+            Console.WriteLine($"❌ Error in JoinCall: {ex.Message}");
+            return StatusCode(500, new { success = false, error = ex.Message });
         }
     }
 
@@ -231,74 +78,102 @@ public class CallsController : ControllerBase
     {
         try
         {
-            var activeCall = _activeCalls.Values.FirstOrDefault(c =>
-                c.GroupId == groupId && c.IsActive);
-
-            if (activeCall == null) return NotFound(new { error = "No active call found" });
-
-            return Ok(new
+            var result = await _callService.GetActiveCall(groupId);
+            
+            if (result.Success)
             {
-                callId = activeCall.CallId,
-                createdBy = activeCall.CreatedBy,
-                participantCount = activeCall.Participants.Count,
-                isActive = activeCall.IsActive,
-                participants = activeCall.Participants.Select(p => new
-                {
-                    userId = p.UserId,
-                    joinedAt = p.JoinedAt
-                })
-            });
+                return Ok(result);
+            }
+            
+            return NotFound(result);
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = $"Error getting active call: {ex.Message}" });
+            Console.WriteLine($"❌ Error in GetActiveCall: {ex.Message}");
+            return StatusCode(500, new { success = false, error = ex.Message });
         }
     }
 
-    [HttpGet("call-history/{groupId}")]
-    public async Task<IActionResult> GetCallHistory(int groupId)
+    [HttpPost("end-call")]
+    public async Task<IActionResult> EndCall([FromBody] EndCallRequest request)
     {
         try
         {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (string.IsNullOrEmpty(userId))
+            {
+                return Unauthorized(new { success = false, message = "User not authenticated" });
+            }
 
-            var groupMember = await _context.GroupMembers
-                .FirstOrDefaultAsync(gm => gm.GroupId == groupId && gm.UserId == userId);
-            if (groupMember == null) return Unauthorized("You are not a member of this group");
-
-            var callHistory = await _context.GroupCalls
-                .Where(gc => gc.GroupId == groupId)
-                .OrderByDescending(gc => gc.StartedAt)
-                .Select(gc => new
-                {
-                    callId = gc.CallId,
-                    startedBy = gc.StartedBy,
-                    startedAt = gc.StartedAt,
-                    endedAt = gc.EndedAt,
-                    duration = gc.Duration,
-                    participantCount = _context.CallParticipants
-                        .Count(cp => cp.CallId == gc.CallId)
-                })
-                .ToListAsync();
-
-            return Ok(callHistory);
+            var success = await _callService.EndCall(request.GroupId, userId);
+            
+            if (success)
+            {
+                return Ok(new { success = true, message = "Call ended successfully" });
+            }
+            
+            return NotFound(new { success = false, message = "No active call found" });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = $"Error getting call history: {ex.Message}" });
+            Console.WriteLine($"❌ Error in EndCall: {ex.Message}");
+            return StatusCode(500, new { success = false, error = ex.Message });
+        }
+    }
+
+    [HttpGet("call-stats/{groupId}")]
+    public async Task<IActionResult> GetCallStatistics(int groupId)
+    {
+        try
+        {
+            var result = await _callService.GetCallStats(groupId);
+            
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+            
+            return NotFound(result);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error in GetCallStatistics: {ex.Message}");
+            return StatusCode(500, new { success = false, error = ex.Message });
+        }
+    }
+
+    [HttpGet("user-stats")]
+    public async Task<IActionResult> GetUserCallStatistics()
+    {
+        try
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (string.IsNullOrEmpty(userId))
+            {
+                return Unauthorized(new { success = false, message = "User not authenticated" });
+            }
+
+            var result = await _callService.GetUserCallStats(userId);
+            
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+            
+            return NotFound(result);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error in GetUserCallStatistics: {ex.Message}");
+            return StatusCode(500, new { success = false, error = ex.Message });
         }
     }
 }
 
-// ==============================
-// Auxiliary classes for controller
-// ==============================
+// DTOs para las solicitudes
 public class CreateCallRequest
-{
-    public int GroupId { get; set; }
-}
-
-public class EndCallRequest
 {
     public int GroupId { get; set; }
 }
@@ -308,20 +183,7 @@ public class JoinCallRequest
     public int GroupId { get; set; }
 }
 
-public class CallSession
+public class EndCallRequest
 {
-    public string CallId { get; set; } = string.Empty;
     public int GroupId { get; set; }
-    public int CreatedBy { get; set; }
-    public DateTime CreatedAt { get; set; }
-    public DateTime? EndedAt { get; set; }
-    public bool IsActive { get; set; }
-    public List<SessionParticipant> Participants { get; set; } = new();
-}
-
-public class SessionParticipant
-{
-    public int UserId { get; set; }
-    public DateTime JoinedAt { get; set; }
-    public DateTime? LeftAt { get; set; }
 }

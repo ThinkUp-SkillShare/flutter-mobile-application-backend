@@ -13,6 +13,8 @@ builder.Environment.WebRootPath = Path.Combine(builder.Environment.ContentRootPa
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddScoped<ICallService, CallService>();
+builder.Services.AddSingleton<WebSocketHandler>();
 
 builder.Services.AddCors(options =>
 {
@@ -68,6 +70,7 @@ builder.Services.AddAuthorization();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IStudentService, StudentService>();
 builder.Services.AddScoped<IGroupManagementService, GroupManagementService>();
+builder.Services.AddSingleton<WebSocketHandler>();
 
 var app = builder.Build();
 
@@ -99,14 +102,8 @@ app.UseStaticFiles();
 
 app.UseAuthentication();
 app.UseAuthorization();
-
 app.MapControllers();
-
-app.Map("/ws/{groupId}", async (HttpContext context, int groupId) =>
-{
-    var handler = new WebSocketHandler();
-    await handler.HandleWebSocket(context, groupId);
-});
+app.UseWebSockets();
 
 app.MapGet("/api/test-static-files", () =>
 {
@@ -122,6 +119,12 @@ app.MapGet("/api/test-static-files", () =>
         uploadsPath = uploadsDir,
         totalFiles = files
     };
+});
+
+app.Map("/ws/call/{callId}", async (HttpContext context, string callId) =>
+{
+    var handler = context.RequestServices.GetRequiredService<WebSocketHandler>();
+    await handler.HandleCallWebSocket(context, callId);
 });
 
 app.Run();
