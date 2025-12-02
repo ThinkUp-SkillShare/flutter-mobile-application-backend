@@ -46,6 +46,32 @@ public class DocumentController : ControllerBase
         }
     }
 
+    // GET: api/document/statistics/global
+    [HttpGet("statistics/global")]
+    public async Task<ActionResult<object>> GetGlobalStatistics()
+    {
+        try
+        {
+            var userId = GetUserId();
+        
+            var totalDocuments = await _context.GroupDocuments.CountAsync();
+            var userDocuments = await _context.GroupDocuments.CountAsync(d => d.UserId == userId);
+            var totalSize = await _context.GroupDocuments.SumAsync(d => d.FileSize ?? 0);
+        
+            return Ok(new
+            {
+                TotalDocuments = totalDocuments,
+                MyDocuments = userDocuments,
+                TotalSize = totalSize
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting global statistics");
+            return StatusCode(500, new { message = "Internal server error" });
+        }
+    }
+    
     // GET: api/document/group/{groupId}
     [HttpGet("group/{groupId}")]
     public async Task<ActionResult<IEnumerable<GroupDocumentDto>>> GetGroupDocuments(int groupId)
