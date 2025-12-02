@@ -6,3 +6,6 @@ obj/
 *.cache
 *.log
 *.db
+appsettings.json
+wwwroot/
+Properties/
