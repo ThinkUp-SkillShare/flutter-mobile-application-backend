@@ -106,11 +106,8 @@ foreach (var dir in directoriesToCreate)
         Console.WriteLine($"✅ Created directory: {dir}");
     }
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI();
 
 app.UseCors("AllowAll");
 //app.UseHttpsRedirection();
@@ -185,5 +182,7 @@ app.MapGet("/api/debug/uploads", () =>
         uploadsPath
     };
 });
+
+app.MapGet("/", () => "🚀 SkillShare Flutter Backend is Running!");
 
 app.Run();
