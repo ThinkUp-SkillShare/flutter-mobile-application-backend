@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using SkillShareBackend.Data;
 using SkillShareBackend.DTOs;
 using SkillShareBackend.Models;
+using SkillShareBackend.Services;
 
 namespace SkillShareBackend.Controllers;
 
@@ -14,10 +15,12 @@ namespace SkillShareBackend.Controllers;
 public class GroupChatController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IFileStorageService _fileStorage;
 
-    public GroupChatController(AppDbContext context)
+    public GroupChatController(AppDbContext context, IFileStorageService fileStorage)
     {
         _context = context;
+        _fileStorage = fileStorage;
     }
 
     private int GetCurrentUserId()
@@ -109,6 +112,8 @@ public class GroupChatController : ControllerBase
         var userId = GetCurrentUserId();
         if (userId == 0) return Unauthorized();
 
+        Console.WriteLine($"💬 SendMessage - GroupId: {groupId}, UserId: {userId}, Type: {dto.MessageType}");
+
         // Verify user is a member
         var isMember = await _context.GroupMembers
             .AnyAsync(gm => gm.GroupId == groupId && gm.UserId == userId);
@@ -116,13 +121,35 @@ public class GroupChatController : ControllerBase
         if (!isMember)
             return Forbid();
 
+        string? fileUrl = null;
+
+        // Procesar archivo si existe
+        if (!string.IsNullOrEmpty(dto.FileBase64))
+            try
+            {
+                Console.WriteLine($"💬 SendMessage - Processing file: {dto.FileName}, Size: {dto.FileSize}");
+
+                fileUrl = await _fileStorage.SaveFileAsync(
+                    dto.FileBase64,
+                    dto.FileName ?? "file",
+                    dto.MessageType
+                );
+
+                Console.WriteLine($"💬 SendMessage - File saved successfully: {fileUrl}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ SendMessage - Error saving file: {ex.Message}");
+                return BadRequest(new { message = $"Error saving file: {ex.Message}" });
+            }
+
         var message = new GroupMessage
         {
             GroupId = groupId,
             UserId = userId,
             MessageType = dto.MessageType,
             Content = dto.Content,
-            FileUrl = dto.FileUrl,
+            FileUrl = fileUrl,
             FileName = dto.FileName,
             FileSize = dto.FileSize,
             Duration = dto.Duration,
@@ -132,9 +159,19 @@ public class GroupChatController : ControllerBase
         };
 
         _context.GroupMessages.Add(message);
-        await _context.SaveChangesAsync();
 
-        // Load relationships
+        try
+        {
+            await _context.SaveChangesAsync();
+            Console.WriteLine($"✅ SendMessage - Message saved successfully, ID: {message.Id}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ SendMessage - Error saving to database: {ex.Message}");
+            throw;
+        }
+
+        // Load relationships for the DTO
         await _context.Entry(message).Reference(m => m.User).LoadAsync();
         if (message.ReplyToMessageId.HasValue)
         {
@@ -177,6 +214,46 @@ public class GroupChatController : ControllerBase
             IsSentByCurrentUser = true
         };
 
+        // NOTIFICAR A TODOS LOS CLIENTES VIA WEBSOCKET
+        try
+        {
+            var chatHandler = HttpContext.RequestServices.GetRequiredService<ChatWebSocketHandler>();
+            // Crear una copia del mensaje con IsSentByCurrentUser = false para otros usuarios
+            var notificationDto = new GroupMessageDto
+            {
+                Id = messageDto.Id,
+                GroupId = messageDto.GroupId,
+                UserId = messageDto.UserId,
+                UserEmail = messageDto.UserEmail,
+                UserProfileImage = messageDto.UserProfileImage,
+                MessageType = messageDto.MessageType,
+                Content = messageDto.Content,
+                FileUrl = messageDto.FileUrl,
+                FileName = messageDto.FileName,
+                FileSize = messageDto.FileSize,
+                Duration = messageDto.Duration,
+                ReplyToMessageId = messageDto.ReplyToMessageId,
+                ReplyToMessage = messageDto.ReplyToMessage,
+                IsEdited = messageDto.IsEdited,
+                IsDeleted = messageDto.IsDeleted,
+                CreatedAt = messageDto.CreatedAt,
+                UpdatedAt = messageDto.UpdatedAt,
+                Reactions = messageDto.Reactions,
+                IsRead = messageDto.IsRead,
+                // Importante: Cuando se notifica a otros usuarios, deben ver IsSentByCurrentUser = false
+                IsSentByCurrentUser = false
+            };
+            await ChatWebSocketHandler.NotifyNewMessage(groupId, notificationDto);
+            Console.WriteLine($"📢 SendMessage - WebSocket notification sent for message {message.Id}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ SendMessage - WebSocket notification failed: {ex.Message}");
+            // No fallar si el WebSocket falla, solo loggear
+        }
+
+        // Pero devolvemos true para el usuario que envía
+        messageDto.IsSentByCurrentUser = true;
         return CreatedAtAction(nameof(GetMessages), new { groupId }, messageDto);
     }
 
@@ -230,6 +307,9 @@ public class GroupChatController : ControllerBase
         if (message.UserId != userId && !isAdmin)
             return Forbid();
 
+        // Eliminar archivo asociado si existe
+        if (!string.IsNullOrEmpty(message.FileUrl)) await _fileStorage.DeleteFileAsync(message.FileUrl);
+
         message.IsDeleted = true;
         message.UpdatedAt = DateTime.UtcNow;
 
@@ -258,7 +338,12 @@ public class GroupChatController : ControllerBase
             .FirstOrDefaultAsync(r => r.MessageId == messageId && r.UserId == userId && r.Reaction == dto.Reaction);
 
         if (existingReaction != null)
-            return BadRequest(new { message = "Reaction already exists" });
+        {
+            // Si ya existe, removerla (toggle)
+            _context.MessageReactions.Remove(existingReaction);
+            await _context.SaveChangesAsync();
+            return Ok(new { message = "Reaction removed" });
+        }
 
         var reaction = new MessageReaction
         {
@@ -341,5 +426,27 @@ public class GroupChatController : ControllerBase
         await _context.SaveChangesAsync();
 
         return Ok();
+    }
+
+    // GET: api/groups/{groupId}/chat/messages/{messageId}/file
+    [HttpGet("messages/{messageId}/file")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetMessageFile(int groupId, int messageId)
+    {
+        var message = await _context.GroupMessages
+            .FirstOrDefaultAsync(m => m.Id == messageId && m.GroupId == groupId);
+
+        if (message == null || string.IsNullOrEmpty(message.FileUrl))
+            return NotFound();
+
+        try
+        {
+            var fileBase64 = await _fileStorage.GetFileAsBase64Async(message.FileUrl);
+            return Ok(new { fileUrl = fileBase64, fileName = message.FileName });
+        }
+        catch (Exception ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
     }
 }

@@ -36,10 +36,19 @@ public class ReplyMessageDto
 
 public class SendMessageDto
 {
-    public int GroupId { get; set; }
     public string MessageType { get; set; } = "text";
     public string? Content { get; set; }
+    
+    /// <summary>
+    /// Base64 del archivo a enviar (imagen, audio, documento)
+    /// </summary>
+    public string? FileBase64 { get; set; }
+    
+    /// <summary>
+    /// URL del archivo (solo para compatibilidad, preferir FileBase64)
+    /// </summary>
     public string? FileUrl { get; set; }
+    
     public string? FileName { get; set; }
     public long? FileSize { get; set; }
     public int? Duration { get; set; }

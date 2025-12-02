@@ -2,6 +2,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using SkillShareBackend.Data;
 using SkillShareBackend.Services;
@@ -13,8 +14,15 @@ builder.Environment.WebRootPath = Path.Combine(builder.Environment.ContentRootPa
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// Servicios registrados
 builder.Services.AddScoped<ICallService, CallService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IStudentService, StudentService>();
+builder.Services.AddScoped<IGroupManagementService, GroupManagementService>();
+builder.Services.AddScoped<IFileStorageService, FileStorageService>();
 builder.Services.AddSingleton<WebSocketHandler>();
+builder.Services.AddSingleton<ChatWebSocketHandler>();
 
 builder.Services.AddCors(options =>
 {
@@ -66,14 +74,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
-// Add Services
-builder.Services.AddScoped<IAuthService, AuthService>();
-builder.Services.AddScoped<IStudentService, StudentService>();
-builder.Services.AddScoped<IGroupManagementService, GroupManagementService>();
-builder.Services.AddSingleton<WebSocketHandler>();
-
 var app = builder.Build();
 
+// Crear directorios necesarios para almacenamiento de archivos
 var wwwrootPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
 if (!Directory.Exists(wwwrootPath))
 {
@@ -81,12 +84,21 @@ if (!Directory.Exists(wwwrootPath))
     Console.WriteLine($"✅ Created wwwroot directory: {wwwrootPath}");
 }
 
-var uploadsPath = Path.Combine(wwwrootPath, "uploads", "documents");
-if (!Directory.Exists(uploadsPath))
+// Directorios para diferentes tipos de archivos
+var directoriesToCreate = new[]
 {
-    Directory.CreateDirectory(uploadsPath);
-    Console.WriteLine($"✅ Created uploads directory: {uploadsPath}");
-}
+    Path.Combine(wwwrootPath, "uploads", "images"),
+    Path.Combine(wwwrootPath, "uploads", "audio"),
+    Path.Combine(wwwrootPath, "uploads", "files"),
+    Path.Combine(wwwrootPath, "uploads", "documents")
+};
+
+foreach (var dir in directoriesToCreate)
+    if (!Directory.Exists(dir))
+    {
+        Directory.CreateDirectory(dir);
+        Console.WriteLine($"✅ Created directory: {dir}");
+    }
 
 if (app.Environment.IsDevelopment())
 {
@@ -95,36 +107,77 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowAll");
-
 app.UseHttpsRedirection();
-
-app.UseStaticFiles();
+app.UseStaticFiles(); // Importante para servir archivos estáticos
 
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.UseWebSockets();
 
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(
+        Path.Combine(builder.Environment.WebRootPath, "uploads")),
+    RequestPath = "/uploads",
+    ServeUnknownFileTypes = true
+});
+
+// Endpoint de prueba para verificar directorios
 app.MapGet("/api/test-static-files", () =>
 {
-    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "documents");
-    var exists = Directory.Exists(uploadsDir);
-    var files = exists ? Directory.GetFiles(uploadsDir).Length : 0;
+    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads");
+    var imageDir = Path.Combine(uploadsDir, "images");
+    var audioDir = Path.Combine(uploadsDir, "audio");
+    var filesDir = Path.Combine(uploadsDir, "files");
 
     return new
     {
-        uploadsDirectoryExists = exists,
+        uploadsDirectoryExists = Directory.Exists(uploadsDir),
+        imageDirectoryExists = Directory.Exists(imageDir),
+        audioDirectoryExists = Directory.Exists(audioDir),
+        filesDirectoryExists = Directory.Exists(filesDir),
         currentDirectory = Directory.GetCurrentDirectory(),
         wwwrootPath = app.Environment.WebRootPath,
-        uploadsPath = uploadsDir,
-        totalFiles = files
+        totalImagesFiles = Directory.Exists(imageDir) ? Directory.GetFiles(imageDir).Length : 0,
+        totalAudioFiles = Directory.Exists(audioDir) ? Directory.GetFiles(audioDir).Length : 0,
+        totalOtherFiles = Directory.Exists(filesDir) ? Directory.GetFiles(filesDir).Length : 0
     };
 });
 
+// WebSocket para llamadas
 app.Map("/ws/call/{callId}", async (HttpContext context, string callId) =>
 {
     var handler = context.RequestServices.GetRequiredService<WebSocketHandler>();
     await handler.HandleCallWebSocket(context, callId);
+});
+
+
+app.Map("/ws/chat/{groupId}", async (HttpContext context, int groupId) =>
+{
+    var handler = context.RequestServices.GetRequiredService<ChatWebSocketHandler>();
+    await handler.HandleChatWebSocket(context, groupId);
+});
+
+app.MapGet("/api/debug/uploads", () =>
+{
+    var wwwrootPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+    var uploadsPath = Path.Combine(wwwrootPath, "uploads");
+    var imagesPath = Path.Combine(uploadsPath, "images");
+    var audioPath = Path.Combine(uploadsPath, "audio");
+    var filesPath = Path.Combine(uploadsPath, "files");
+
+    return new
+    {
+        wwwrootExists = Directory.Exists(wwwrootPath),
+        uploadsExists = Directory.Exists(uploadsPath),
+        imagesExists = Directory.Exists(imagesPath),
+        audioExists = Directory.Exists(audioPath),
+        filesExists = Directory.Exists(filesPath),
+        currentDirectory = Directory.GetCurrentDirectory(),
+        wwwrootPath,
+        uploadsPath
+    };
 });
 
 app.Run();
