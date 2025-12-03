@@ -34,16 +34,16 @@ public class FirebaseStorageService : IFirebaseStorageService
             _logger.LogInformation("🚀 Initializing Firebase Storage Service...");
             _logger.LogInformation($"📦 Bucket: {_bucketName}");
 
-            // Configuración desde variables de entorno (Render)
+            // EL PROBLEMA: La configuración de Firebase puede no estar correcta
             var firebaseConfigJson = configuration["Firebase:Config"];
-            
+        
             if (!string.IsNullOrEmpty(firebaseConfigJson))
             {
                 _logger.LogInformation("🔑 Using Firebase config from environment variables");
-                
+            
                 try
                 {
-                    // Crear credencial desde JSON
+                    // Verificar que el JSON sea válido
                     var credential = GoogleCredential.FromJson(firebaseConfigJson);
                     _storageClient = StorageClient.Create(credential);
                     _logger.LogInformation("✅ Firebase credentials loaded successfully");
@@ -57,12 +57,10 @@ public class FirebaseStorageService : IFirebaseStorageService
             else
             {
                 _logger.LogWarning("⚠️ No Firebase config found, using default credentials");
-                
-                // Para desarrollo local (si tienes GOOGLE_APPLICATION_CREDENTIALS)
+            
+                // Para desarrollo local
                 _storageClient = StorageClient.Create();
             }
-            
-            _logger.LogInformation("✅ Firebase Storage Service initialized successfully");
         }
         catch (Exception ex)
         {

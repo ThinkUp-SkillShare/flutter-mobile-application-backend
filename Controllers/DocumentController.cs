@@ -17,8 +17,8 @@ public class DocumentController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IWebHostEnvironment _environment;
-    private readonly ILogger<DocumentController> _logger;
     private readonly IFirebaseStorageService _firebaseStorageService;
+    private readonly ILogger<DocumentController> _logger;
 
     public DocumentController(
         AppDbContext context,
@@ -34,26 +34,43 @@ public class DocumentController : ControllerBase
     }
 
     /// <summary>
-    /// Gets the current user's ID from the JWT token
+    ///     Gets the current user's ID from the JWT token
     /// </summary>
+    // En el método GetUserId(), hay un problema con la extracción del UserId
     private int GetUserId()
     {
         try
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                              ?? User.FindFirst("uid")?.Value
+            // La respuesta del login muestra: "uid": "2"
+            // Ver todos los claims disponibles
+            var claims = User.Claims.ToList();
+            _logger.LogInformation($"Available claims: {string.Join(", ", claims.Select(c => $"{c.Type}:{c.Value}"))}");
+
+            // Priorizar "uid" que es lo que se envía en el token
+            var userIdClaim = User.FindFirst("uid")?.Value
+                              ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                               ?? User.FindFirst("userId")?.Value
                               ?? User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
 
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out var userId))
+            if (string.IsNullOrEmpty(userIdClaim))
+            {
+                _logger.LogError("No user ID claim found in token");
                 throw new UnauthorizedAccessException("User ID not found in token");
+            }
 
+            if (!int.TryParse(userIdClaim, out var userId))
+            {
+                _logger.LogError($"Failed to parse user ID from claim: {userIdClaim}");
+                throw new UnauthorizedAccessException($"Invalid user ID format: {userIdClaim}");
+            }
+
+            _logger.LogInformation($"Extracted user ID: {userId}");
             return userId;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error extracting user ID from token");
-            throw new UnauthorizedAccessException("Failed to extract user ID from token");
+            throw;
         }
     }
 
@@ -144,7 +161,10 @@ public class DocumentController : ControllerBase
     {
         try
         {
+            _logger.LogInformation("📥 GET /api/document/user called");
+
             var userId = GetUserId();
+            _logger.LogInformation($"🔑 User ID: {userId}");
 
             var documents = await _context.GroupDocuments
                 .Where(d => d.UserId == userId)
@@ -175,16 +195,23 @@ public class DocumentController : ControllerBase
                 })
                 .ToListAsync();
 
+            _logger.LogInformation($"📄 Found {documents.Count} documents for user {userId}");
             return Ok(documents);
         }
         catch (UnauthorizedAccessException ex)
         {
+            _logger.LogError(ex, "❌ Unauthorized access");
             return Unauthorized(new { message = ex.Message });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting user documents");
-            return StatusCode(500, new { message = "Internal server error" });
+            _logger.LogError(ex, "❌ Error getting user documents");
+            return StatusCode(500, new
+            {
+                message = "Internal server error",
+                error = ex.Message,
+                stackTrace = ex.StackTrace
+            });
         }
     }
 
@@ -199,11 +226,11 @@ public class DocumentController : ControllerBase
             var favoriteDocuments = await _context.DocumentFavorites
                 .Where(df => df.UserId == userId)
                 .Include(df => df.Document)
-                    .ThenInclude(d => d.User)
+                .ThenInclude(d => d.User)
                 .Include(df => df.Document)
-                    .ThenInclude(d => d.Group)
+                .ThenInclude(d => d.Group)
                 .Include(df => df.Document)
-                    .ThenInclude(d => d.Subject)
+                .ThenInclude(d => d.Subject)
                 .OrderByDescending(df => df.CreatedAt)
                 .Select(df => new GroupDocumentDto
                 {
@@ -652,7 +679,7 @@ public class DocumentController : ControllerBase
     }
 
     /// <summary>
-    /// Determines the file type based on file extension
+    ///     Determines the file type based on file extension
     /// </summary>
     private string GetFileType(string fileExtension)
     {
