@@ -1,19 +1,15 @@
-
-FROM maven:3.9.6-eclipse-temurin-21 AS build
-WORKDIR /app
-
-COPY pom.xml .
-RUN mvn -q -e -DskipTests dependency:go-offline
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
 
 COPY . .
+RUN dotnet restore
+RUN dotnet publish -c Release -o /app/publish
 
-RUN mvn -q -e -DskipTests clean package
-
-FROM eclipse-temurin:21-jre
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
+COPY --from=build /app/publish .
 
-COPY --from=build /app/target/*.jar app.jar
-
+ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["dotnet", "SkillShareMentor.Backend.dll"]
