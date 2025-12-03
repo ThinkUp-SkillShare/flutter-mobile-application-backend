@@ -24,6 +24,7 @@ public class AppDbContext : DbContext
     public DbSet<CallStatistics> CallStatistics { get; set; }
 
     public DbSet<GroupDocument> GroupDocuments { get; set; }
+    public DbSet<DocumentFavorite> DocumentFavorites { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -318,6 +319,7 @@ public class AppDbContext : DbContext
             entity.Property(gd => gd.SubjectId).HasColumnName("subject_id");
             entity.Property(gd => gd.UploadDate).HasColumnName("upload_date");
             entity.Property(gd => gd.DownloadCount).HasColumnName("download_count").HasDefaultValue(0);
+            entity.Property(gd => gd.FavoriteCount).HasColumnName("favorite_count").HasDefaultValue(0);
 
             entity.HasOne(gd => gd.Group)
                 .WithMany()
@@ -336,6 +338,33 @@ public class AppDbContext : DbContext
                 .HasForeignKey(gd => gd.SubjectId)
                 .HasConstraintName("FK_GroupDocument_Subject")
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // Configuración para DocumentFavorite
+        modelBuilder.Entity<DocumentFavorite>(entity =>
+        {
+            entity.ToTable("document_favorites");
+            entity.HasKey(df => df.Id).HasName("PRIMARY");
+            entity.Property(df => df.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            entity.Property(df => df.DocumentId).HasColumnName("document_id").IsRequired();
+            entity.Property(df => df.UserId).HasColumnName("user_id").IsRequired();
+            entity.Property(df => df.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.HasOne(df => df.Document)
+                .WithMany()
+                .HasForeignKey(df => df.DocumentId)
+                .HasConstraintName("FK_DocumentFavorite_Document")
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(df => df.User)
+                .WithMany()
+                .HasForeignKey(df => df.UserId)
+                .HasConstraintName("FK_DocumentFavorite_User")
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(df => new { df.DocumentId, df.UserId })
+                .IsUnique()
+                .HasDatabaseName("IX_DocumentFavorite_DocumentId_UserId");
         });
     }
 

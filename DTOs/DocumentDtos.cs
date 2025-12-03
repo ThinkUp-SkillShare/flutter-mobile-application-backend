@@ -10,13 +10,16 @@ public class GroupDocumentDto
     public int UserId { get; set; }
     public string UserEmail { get; set; } = string.Empty;
 
-    [Required] public string Title { get; set; } = string.Empty;
+    [Required] 
+    public string Title { get; set; } = string.Empty;
 
     public string? Description { get; set; }
 
-    [Required] public string FileName { get; set; } = string.Empty;
+    [Required] 
+    public string FileName { get; set; } = string.Empty;
 
-    [Required] public string FileUrl { get; set; } = string.Empty;
+    [Required] 
+    public string FileUrl { get; set; } = string.Empty;
 
     public long? FileSize { get; set; }
     public string? FileType { get; set; }
@@ -24,6 +27,9 @@ public class GroupDocumentDto
     public string? SubjectName { get; set; }
     public DateTime UploadDate { get; set; }
     public int DownloadCount { get; set; }
+    
+    public int? FavoriteCount { get; set; }
+    public bool IsFavorite { get; set; }
 }
 
 public class UploadDocumentDto

@@ -18,13 +18,20 @@ public class DocumentController : ControllerBase
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<DocumentController> _logger;
 
-    public DocumentController(AppDbContext context, ILogger<DocumentController> logger, IWebHostEnvironment environment)
+    public DocumentController(
+        AppDbContext context, 
+        ILogger<DocumentController> logger, 
+        IWebHostEnvironment environment
+    )
     {
         _context = context;
         _logger = logger;
         _environment = environment;
     }
 
+    /// <summary>
+    /// Gets the current user's ID from the JWT token
+    /// </summary>
     private int GetUserId()
     {
         try
@@ -53,11 +60,11 @@ public class DocumentController : ControllerBase
         try
         {
             var userId = GetUserId();
-        
+
             var totalDocuments = await _context.GroupDocuments.CountAsync();
             var userDocuments = await _context.GroupDocuments.CountAsync(d => d.UserId == userId);
             var totalSize = await _context.GroupDocuments.SumAsync(d => d.FileSize ?? 0);
-        
+
             return Ok(new
             {
                 TotalDocuments = totalDocuments,
@@ -71,7 +78,7 @@ public class DocumentController : ControllerBase
             return StatusCode(500, new { message = "Internal server error" });
         }
     }
-    
+
     // GET: api/document/group/{groupId}
     [HttpGet("group/{groupId}")]
     public async Task<ActionResult<IEnumerable<GroupDocumentDto>>> GetGroupDocuments(int groupId)
@@ -80,7 +87,7 @@ public class DocumentController : ControllerBase
         {
             var userId = GetUserId();
 
-            // Verificar que el usuario es miembro del grupo
+            // Verify user is a member of the group
             var isMember = await _context.GroupMembers
                 .AnyAsync(gm => gm.GroupId == groupId && gm.UserId == userId);
 
@@ -107,7 +114,10 @@ public class DocumentController : ControllerBase
                     SubjectId = d.SubjectId,
                     SubjectName = d.Subject != null ? d.Subject.Name : "General",
                     UploadDate = d.UploadDate,
-                    DownloadCount = d.DownloadCount
+                    DownloadCount = d.DownloadCount,
+                    FavoriteCount = d.FavoriteCount ?? 0,
+                    IsFavorite = _context.DocumentFavorites
+                        .Any(df => df.DocumentId == d.Id && df.UserId == userId)
                 })
                 .ToListAsync();
 
@@ -154,7 +164,10 @@ public class DocumentController : ControllerBase
                     SubjectId = d.SubjectId,
                     SubjectName = d.Subject != null ? d.Subject.Name : "General",
                     UploadDate = d.UploadDate,
-                    DownloadCount = d.DownloadCount
+                    DownloadCount = d.DownloadCount,
+                    FavoriteCount = d.FavoriteCount ?? 0,
+                    IsFavorite = _context.DocumentFavorites
+                        .Any(df => df.DocumentId == d.Id && df.UserId == userId)
                 })
                 .ToListAsync();
 
@@ -167,6 +180,58 @@ public class DocumentController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting user documents");
+            return StatusCode(500, new { message = "Internal server error" });
+        }
+    }
+
+    // GET: api/document/favorites
+    [HttpGet("favorites")]
+    public async Task<ActionResult<IEnumerable<GroupDocumentDto>>> GetFavoriteDocuments()
+    {
+        try
+        {
+            var userId = GetUserId();
+
+            var favoriteDocuments = await _context.DocumentFavorites
+                .Where(df => df.UserId == userId)
+                .Include(df => df.Document)
+                    .ThenInclude(d => d.User)
+                .Include(df => df.Document)
+                    .ThenInclude(d => d.Group)
+                .Include(df => df.Document)
+                    .ThenInclude(d => d.Subject)
+                .OrderByDescending(df => df.CreatedAt)
+                .Select(df => new GroupDocumentDto
+                {
+                    Id = df.Document.Id,
+                    GroupId = df.Document.GroupId,
+                    GroupName = df.Document.Group!.Name,
+                    UserId = df.Document.UserId,
+                    UserEmail = df.Document.User!.Email,
+                    Title = df.Document.Title,
+                    Description = df.Document.Description,
+                    FileName = df.Document.FileName,
+                    FileUrl = df.Document.FileUrl,
+                    FileSize = df.Document.FileSize,
+                    FileType = df.Document.FileType,
+                    SubjectId = df.Document.SubjectId,
+                    SubjectName = df.Document.Subject != null ? df.Document.Subject.Name : "General",
+                    UploadDate = df.Document.UploadDate,
+                    DownloadCount = df.Document.DownloadCount,
+                    FavoriteCount = df.Document.FavoriteCount ?? 0,
+                    IsFavorite = true
+                })
+                .ToListAsync();
+
+            return Ok(favoriteDocuments);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Unauthorized(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting favorite documents");
             return StatusCode(500, new { message = "Internal server error" });
         }
     }
@@ -187,11 +252,14 @@ public class DocumentController : ControllerBase
 
             if (document == null) return NotFound(new { message = "Document not found" });
 
-            // Verificar que el usuario es miembro del grupo
+            // Verify user is a member of the group
             var isMember = await _context.GroupMembers
                 .AnyAsync(gm => gm.GroupId == document.GroupId && gm.UserId == userId);
 
             if (!isMember) return Forbid();
+
+            var isFavorite = await _context.DocumentFavorites
+                .AnyAsync(df => df.DocumentId == id && df.UserId == userId);
 
             var dto = new GroupDocumentDto
             {
@@ -209,7 +277,9 @@ public class DocumentController : ControllerBase
                 SubjectId = document.SubjectId,
                 SubjectName = document.Subject?.Name,
                 UploadDate = document.UploadDate,
-                DownloadCount = document.DownloadCount
+                DownloadCount = document.DownloadCount,
+                FavoriteCount = document.FavoriteCount ?? 0,
+                IsFavorite = isFavorite
             };
 
             return Ok(dto);
@@ -233,48 +303,61 @@ public class DocumentController : ControllerBase
         {
             var userId = GetUserId();
 
-            // Verificar que el usuario es miembro del grupo
+            // Verify user is a member of the group
             var isMember = await _context.GroupMembers
                 .AnyAsync(gm => gm.GroupId == dto.GroupId && gm.UserId == userId);
 
             if (!isMember) return Forbid();
 
-            if (dto.File == null || dto.File.Length == 0) return BadRequest(new { message = "No file uploaded" });
+            if (dto.File == null || dto.File.Length == 0)
+                return BadRequest(new { message = "No file uploaded" });
 
-            // Validar tamaño del archivo (max 50MB)
-            if (dto.File.Length > 50 * 1024 * 1024) return BadRequest(new { message = "File size exceeds 50MB limit" });
+            // Validate file size (max 50MB)
+            if (dto.File.Length > 50 * 1024 * 1024)
+                return BadRequest(new { message = "File size exceeds 50MB limit" });
 
-            // Crear directorio de uploads si no existe
-            var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "documents");
-            if (!Directory.Exists(uploadsPath)) Directory.CreateDirectory(uploadsPath);
+            // Create uploads directory if it doesn't exist
+            var uploadsPath = Path.Combine(
+                Directory.GetCurrentDirectory(),
+                "wwwroot",
+                "uploads",
+                "documents"
+            );
+            
+            if (!Directory.Exists(uploadsPath))
+                Directory.CreateDirectory(uploadsPath);
 
-            // Generar nombre único para el archivo
+            // Generate unique file name
             var fileExtension = Path.GetExtension(dto.File.FileName);
             var fileName = $"{Guid.NewGuid()}{fileExtension}";
             var filePath = Path.Combine(uploadsPath, fileName);
 
-            // Guardar archivo
+            // Save file
             using (var stream = new FileStream(filePath, FileMode.Create))
             {
                 await dto.File.CopyToAsync(stream);
             }
 
-            // Determinar tipo de archivo
+            // Determine file type
             var fileType = GetFileType(fileExtension);
 
-            // Verificar que el subject existe si se proporcionó
+            // Verify subject exists if provided
             if (dto.SubjectId.HasValue)
             {
-                var subjectExists = await _context.Subjects.AnyAsync(s => s.Id == dto.SubjectId.Value);
+                var subjectExists = await _context.Subjects
+                    .AnyAsync(s => s.Id == dto.SubjectId.Value);
+                
                 if (!subjectExists)
                 {
-                    // Eliminar archivo subido si el subject no existe
-                    if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath);
+                    // Delete uploaded file if subject doesn't exist
+                    if (System.IO.File.Exists(filePath))
+                        System.IO.File.Delete(filePath);
+                    
                     return BadRequest(new { message = "Invalid subject ID" });
                 }
             }
 
-            // Crear documento en base de datos
+            // Create document in database
             var document = new GroupDocument
             {
                 GroupId = dto.GroupId,
@@ -287,22 +370,33 @@ public class DocumentController : ControllerBase
                 FileType = fileType,
                 SubjectId = dto.SubjectId,
                 UploadDate = DateTime.UtcNow,
-                DownloadCount = 0
+                DownloadCount = 0,
+                FavoriteCount = 0
             };
 
             _context.GroupDocuments.Add(document);
             await _context.SaveChangesAsync();
 
-            // Cargar relaciones para el response
+            // Load relationships for response
             await _context.Entry(document)
                 .Reference(d => d.Subject)
+                .LoadAsync();
+
+            await _context.Entry(document)
+                .Reference(d => d.User)
+                .LoadAsync();
+
+            await _context.Entry(document)
+                .Reference(d => d.Group)
                 .LoadAsync();
 
             var resultDto = new GroupDocumentDto
             {
                 Id = document.Id,
                 GroupId = document.GroupId,
+                GroupName = document.Group?.Name,
                 UserId = document.UserId,
+                UserEmail = document.User?.Email ?? string.Empty,
                 Title = document.Title,
                 Description = document.Description,
                 FileName = document.FileName,
@@ -312,7 +406,9 @@ public class DocumentController : ControllerBase
                 SubjectId = document.SubjectId,
                 SubjectName = document.Subject?.Name,
                 UploadDate = document.UploadDate,
-                DownloadCount = document.DownloadCount
+                DownloadCount = document.DownloadCount,
+                FavoriteCount = document.FavoriteCount ?? 0,
+                IsFavorite = false
             };
 
             return CreatedAtAction(nameof(GetDocument), new { id = document.Id }, resultDto);
@@ -340,10 +436,12 @@ public class DocumentController : ControllerBase
                 .Include(d => d.Subject)
                 .FirstOrDefaultAsync(d => d.Id == id);
 
-            if (document == null) return NotFound(new { message = "Document not found" });
+            if (document == null)
+                return NotFound(new { message = "Document not found" });
 
-            // Solo el propietario puede editar
-            if (document.UserId != userId) return Forbid();
+            // Only owner can edit
+            if (document.UserId != userId)
+                return Forbid();
 
             if (!string.IsNullOrEmpty(dto.Title))
                 document.Title = dto.Title;
@@ -353,9 +451,13 @@ public class DocumentController : ControllerBase
 
             if (dto.SubjectId.HasValue)
             {
-                // Verificar que el subject existe
-                var subjectExists = await _context.Subjects.AnyAsync(s => s.Id == dto.SubjectId.Value);
-                if (!subjectExists) return BadRequest(new { message = "Invalid subject ID" });
+                // Verify subject exists
+                var subjectExists = await _context.Subjects
+                    .AnyAsync(s => s.Id == dto.SubjectId.Value);
+                
+                if (!subjectExists)
+                    return BadRequest(new { message = "Invalid subject ID" });
+                
                 document.SubjectId = dto.SubjectId.Value;
             }
 
@@ -383,26 +485,33 @@ public class DocumentController : ControllerBase
             var userId = GetUserId();
 
             var document = await _context.GroupDocuments.FindAsync(id);
+            
             if (document == null)
-            {
                 return NotFound(new { message = "Document not found" });
-            }
 
-            // Solo el propietario puede eliminar
+            // Only owner can delete
             if (document.UserId != userId)
-            {
                 return Forbid();
-            }
 
-            // Eliminar archivo físico si existe
+            // Delete physical file if exists
             if (!string.IsNullOrEmpty(document.FileUrl) && document.FileUrl.StartsWith("/uploads/"))
             {
-                var filePath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", document.FileUrl.TrimStart('/'));
+                var filePath = Path.Combine(
+                    Directory.GetCurrentDirectory(),
+                    "wwwroot",
+                    document.FileUrl.TrimStart('/')
+                );
+                
                 if (System.IO.File.Exists(filePath))
-                {
                     System.IO.File.Delete(filePath);
-                }
             }
+
+            // Delete all favorites associated with this document
+            var favorites = await _context.DocumentFavorites
+                .Where(df => df.DocumentId == id)
+                .ToListAsync();
+            
+            _context.DocumentFavorites.RemoveRange(favorites);
 
             _context.GroupDocuments.Remove(document);
             await _context.SaveChangesAsync();
@@ -429,43 +538,41 @@ public class DocumentController : ControllerBase
             var userId = GetUserId();
 
             var document = await _context.GroupDocuments.FindAsync(id);
+            
             if (document == null)
-            {
                 return NotFound(new { message = "Document not found" });
-            }
 
-            // Verificar que el usuario es miembro del grupo
+            // Verify user is a member of the group
             var isMember = await _context.GroupMembers
                 .AnyAsync(gm => gm.GroupId == document.GroupId && gm.UserId == userId);
 
             if (!isMember)
-            {
                 return Forbid();
-            }
 
-            // Incrementar contador de descargas
+            // Increment download counter
             document.DownloadCount++;
             await _context.SaveChangesAsync();
 
-            // Si es un archivo local, servir el archivo
+            // If it's a local file, serve it directly
             if (document.FileUrl.StartsWith("/uploads/"))
             {
-                var filePath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", document.FileUrl.TrimStart('/'));
+                var filePath = Path.Combine(
+                    Directory.GetCurrentDirectory(),
+                    "wwwroot",
+                    document.FileUrl.TrimStart('/')
+                );
+                
                 if (System.IO.File.Exists(filePath))
                 {
                     var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
                     return File(fileBytes, "application/octet-stream", document.FileName);
                 }
-                else
-                {
-                    return NotFound(new { message = "File not found on server" });
-                }
+
+                return NotFound(new { message = "File not found on server" });
             }
-            else
-            {
-                // Para URLs externas, redirigir
-                return Ok(new { downloadUrl = document.FileUrl });
-            }
+
+            // For external URLs, redirect
+            return Ok(new { downloadUrl = document.FileUrl });
         }
         catch (UnauthorizedAccessException ex)
         {
@@ -478,6 +585,72 @@ public class DocumentController : ControllerBase
         }
     }
 
+    // POST: api/document/{id}/favorite
+    [HttpPost("{id}/favorite")]
+    public async Task<ActionResult<object>> ToggleFavorite(int id)
+    {
+        try
+        {
+            var userId = GetUserId();
+
+            var document = await _context.GroupDocuments.FindAsync(id);
+            
+            if (document == null)
+                return NotFound(new { message = "Document not found" });
+
+            // Verify user is a member of the group
+            var isMember = await _context.GroupMembers
+                .AnyAsync(gm => gm.GroupId == document.GroupId && gm.UserId == userId);
+
+            if (!isMember)
+                return Forbid();
+
+            // Check if already favorited
+            var existingFavorite = await _context.DocumentFavorites
+                .FirstOrDefaultAsync(df => df.DocumentId == id && df.UserId == userId);
+
+            if (existingFavorite != null)
+            {
+                // Remove from favorites
+                _context.DocumentFavorites.Remove(existingFavorite);
+                document.FavoriteCount = Math.Max(0, (document.FavoriteCount ?? 1) - 1);
+            }
+            else
+            {
+                // Add to favorites
+                var favorite = new DocumentFavorite
+                {
+                    DocumentId = id,
+                    UserId = userId,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.DocumentFavorites.Add(favorite);
+                document.FavoriteCount = (document.FavoriteCount ?? 0) + 1;
+            }
+
+            await _context.SaveChangesAsync();
+
+            // Check if now favorited
+            var isFavorite = await _context.DocumentFavorites
+                .AnyAsync(df => df.DocumentId == id && df.UserId == userId);
+
+            return Ok(new
+            {
+                isFavorite,
+                favoriteCount = document.FavoriteCount
+            });
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Unauthorized(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error toggling favorite for document {DocumentId}", id);
+            return StatusCode(500, new { message = "Internal server error" });
+        }
+    }
+
     // GET: api/document/statistics/group/{groupId}
     [HttpGet("statistics/group/{groupId}")]
     public async Task<ActionResult<DocumentStatisticsDto>> GetGroupStatistics(int groupId)
@@ -486,11 +659,12 @@ public class DocumentController : ControllerBase
         {
             var userId = GetUserId();
 
-            // Verificar que el usuario es miembro del grupo
+            // Verify user is a member of the group
             var isMember = await _context.GroupMembers
                 .AnyAsync(gm => gm.GroupId == groupId && gm.UserId == userId);
 
-            if (!isMember) return Forbid();
+            if (!isMember)
+                return Forbid();
 
             var statistics = await _context.GroupDocuments
                 .Where(d => d.GroupId == groupId)
@@ -541,6 +715,9 @@ public class DocumentController : ControllerBase
         return Ok(subjects);
     }
 
+    /// <summary>
+    /// Determines the file type based on file extension
+    /// </summary>
     private string GetFileType(string fileExtension)
     {
         return fileExtension.ToLower() switch
