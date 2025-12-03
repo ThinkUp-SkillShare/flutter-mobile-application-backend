@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using SkillShareBackend.Data;
 using SkillShareBackend.DTOs;
 using SkillShareBackend.Models;
+using SkillShareBackend.Services;
 
 namespace SkillShareBackend.Controllers;
 
@@ -17,16 +18,19 @@ public class DocumentController : ControllerBase
     private readonly AppDbContext _context;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<DocumentController> _logger;
+    private readonly IFirebaseStorageService _firebaseStorageService;
 
     public DocumentController(
-        AppDbContext context, 
-        ILogger<DocumentController> logger, 
-        IWebHostEnvironment environment
+        AppDbContext context,
+        ILogger<DocumentController> logger,
+        IWebHostEnvironment environment,
+        IFirebaseStorageService firebaseStorageService
     )
     {
         _context = context;
         _logger = logger;
         _environment = environment;
+        _firebaseStorageService = firebaseStorageService;
     }
 
     /// <summary>
@@ -303,7 +307,7 @@ public class DocumentController : ControllerBase
         {
             var userId = GetUserId();
 
-            // Verify user is a member of the group
+            // Verificar que el usuario es miembro del grupo
             var isMember = await _context.GroupMembers
                 .AnyAsync(gm => gm.GroupId == dto.GroupId && gm.UserId == userId);
 
@@ -312,52 +316,25 @@ public class DocumentController : ControllerBase
             if (dto.File == null || dto.File.Length == 0)
                 return BadRequest(new { message = "No file uploaded" });
 
-            // Validate file size (max 50MB)
+            // Validar tamaño máximo (50MB)
             if (dto.File.Length > 50 * 1024 * 1024)
                 return BadRequest(new { message = "File size exceeds 50MB limit" });
 
-            // Create uploads directory if it doesn't exist
-            var uploadsPath = Path.Combine(
-                Directory.GetCurrentDirectory(),
-                "wwwroot",
-                "uploads",
-                "documents"
-            );
-            
-            if (!Directory.Exists(uploadsPath))
-                Directory.CreateDirectory(uploadsPath);
+            // Subir archivo a Firebase Storage
+            var fileUrl = await _firebaseStorageService.UploadFileAsync(dto.File);
+            var fileType = _firebaseStorageService.GetFileType(dto.File.FileName);
 
-            // Generate unique file name
-            var fileExtension = Path.GetExtension(dto.File.FileName);
-            var fileName = $"{Guid.NewGuid()}{fileExtension}";
-            var filePath = Path.Combine(uploadsPath, fileName);
-
-            // Save file
-            using (var stream = new FileStream(filePath, FileMode.Create))
-            {
-                await dto.File.CopyToAsync(stream);
-            }
-
-            // Determine file type
-            var fileType = GetFileType(fileExtension);
-
-            // Verify subject exists if provided
+            // Verificar si el subject existe
             if (dto.SubjectId.HasValue)
             {
                 var subjectExists = await _context.Subjects
                     .AnyAsync(s => s.Id == dto.SubjectId.Value);
-                
+
                 if (!subjectExists)
-                {
-                    // Delete uploaded file if subject doesn't exist
-                    if (System.IO.File.Exists(filePath))
-                        System.IO.File.Delete(filePath);
-                    
                     return BadRequest(new { message = "Invalid subject ID" });
-                }
             }
 
-            // Create document in database
+            // Crear documento en la base de datos
             var document = new GroupDocument
             {
                 GroupId = dto.GroupId,
@@ -365,7 +342,7 @@ public class DocumentController : ControllerBase
                 Title = dto.Title,
                 Description = dto.Description,
                 FileName = dto.File.FileName,
-                FileUrl = $"/uploads/documents/{fileName}",
+                FileUrl = fileUrl, // URL de Firebase Storage
                 FileSize = dto.File.Length,
                 FileType = fileType,
                 SubjectId = dto.SubjectId,
@@ -377,15 +354,13 @@ public class DocumentController : ControllerBase
             _context.GroupDocuments.Add(document);
             await _context.SaveChangesAsync();
 
-            // Load relationships for response
+            // Cargar relaciones para la respuesta
             await _context.Entry(document)
                 .Reference(d => d.Subject)
                 .LoadAsync();
-
             await _context.Entry(document)
                 .Reference(d => d.User)
                 .LoadAsync();
-
             await _context.Entry(document)
                 .Reference(d => d.Group)
                 .LoadAsync();
@@ -413,13 +388,83 @@ public class DocumentController : ControllerBase
 
             return CreatedAtAction(nameof(GetDocument), new { id = document.Id }, resultDto);
         }
-        catch (UnauthorizedAccessException ex)
-        {
-            return Unauthorized(new { message = ex.Message });
-        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error uploading document");
+            return StatusCode(500, new { message = "Internal server error" });
+        }
+    }
+
+    // POST: api/document/{id}/download
+    [HttpPost("{id}/download")]
+    public async Task<IActionResult> DownloadDocument(int id)
+    {
+        try
+        {
+            var userId = GetUserId();
+
+            var document = await _context.GroupDocuments.FindAsync(id);
+
+            if (document == null)
+                return NotFound(new { message = "Document not found" });
+
+            // Verify user is a member of the group
+            var isMember = await _context.GroupMembers
+                .AnyAsync(gm => gm.GroupId == document.GroupId && gm.UserId == userId);
+
+            if (!isMember) return Forbid();
+
+            // Increment download counter
+            document.DownloadCount++;
+            await _context.SaveChangesAsync();
+
+            // Descargar archivo de Firebase Storage
+            var fileBytes = await _firebaseStorageService.DownloadFileAsync(document.FileUrl);
+
+            return File(fileBytes, "application/octet-stream", document.FileName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error downloading document {DocumentId}", id);
+            return StatusCode(500, new { message = "Internal server error" });
+        }
+    }
+
+    // DELETE: api/document/{id}
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteDocument(int id)
+    {
+        try
+        {
+            var userId = GetUserId();
+
+            var document = await _context.GroupDocuments.FindAsync(id);
+
+            if (document == null)
+                return NotFound(new { message = "Document not found" });
+
+            // Solo el propietario puede eliminar
+            if (document.UserId != userId)
+                return Forbid();
+
+            // Eliminar archivo de Firebase Storage
+            await _firebaseStorageService.DeleteFileAsync(document.FileUrl);
+
+            // Eliminar todos los favoritos asociados
+            var favorites = await _context.DocumentFavorites
+                .Where(df => df.DocumentId == id)
+                .ToListAsync();
+
+            _context.DocumentFavorites.RemoveRange(favorites);
+            _context.GroupDocuments.Remove(document);
+
+            await _context.SaveChangesAsync();
+
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting document {DocumentId}", id);
             return StatusCode(500, new { message = "Internal server error" });
         }
     }
@@ -454,10 +499,10 @@ public class DocumentController : ControllerBase
                 // Verify subject exists
                 var subjectExists = await _context.Subjects
                     .AnyAsync(s => s.Id == dto.SubjectId.Value);
-                
+
                 if (!subjectExists)
                     return BadRequest(new { message = "Invalid subject ID" });
-                
+
                 document.SubjectId = dto.SubjectId.Value;
             }
 
@@ -476,115 +521,6 @@ public class DocumentController : ControllerBase
         }
     }
 
-    // DELETE: api/document/{id}
-    [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteDocument(int id)
-    {
-        try
-        {
-            var userId = GetUserId();
-
-            var document = await _context.GroupDocuments.FindAsync(id);
-            
-            if (document == null)
-                return NotFound(new { message = "Document not found" });
-
-            // Only owner can delete
-            if (document.UserId != userId)
-                return Forbid();
-
-            // Delete physical file if exists
-            if (!string.IsNullOrEmpty(document.FileUrl) && document.FileUrl.StartsWith("/uploads/"))
-            {
-                var filePath = Path.Combine(
-                    Directory.GetCurrentDirectory(),
-                    "wwwroot",
-                    document.FileUrl.TrimStart('/')
-                );
-                
-                if (System.IO.File.Exists(filePath))
-                    System.IO.File.Delete(filePath);
-            }
-
-            // Delete all favorites associated with this document
-            var favorites = await _context.DocumentFavorites
-                .Where(df => df.DocumentId == id)
-                .ToListAsync();
-            
-            _context.DocumentFavorites.RemoveRange(favorites);
-
-            _context.GroupDocuments.Remove(document);
-            await _context.SaveChangesAsync();
-
-            return NoContent();
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return Unauthorized(new { message = ex.Message });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error deleting document {DocumentId}", id);
-            return StatusCode(500, new { message = "Internal server error" });
-        }
-    }
-
-    // POST: api/document/{id}/download
-    [HttpPost("{id}/download")]
-    public async Task<IActionResult> DownloadDocument(int id)
-    {
-        try
-        {
-            var userId = GetUserId();
-
-            var document = await _context.GroupDocuments.FindAsync(id);
-            
-            if (document == null)
-                return NotFound(new { message = "Document not found" });
-
-            // Verify user is a member of the group
-            var isMember = await _context.GroupMembers
-                .AnyAsync(gm => gm.GroupId == document.GroupId && gm.UserId == userId);
-
-            if (!isMember)
-                return Forbid();
-
-            // Increment download counter
-            document.DownloadCount++;
-            await _context.SaveChangesAsync();
-
-            // If it's a local file, serve it directly
-            if (document.FileUrl.StartsWith("/uploads/"))
-            {
-                var filePath = Path.Combine(
-                    Directory.GetCurrentDirectory(),
-                    "wwwroot",
-                    document.FileUrl.TrimStart('/')
-                );
-                
-                if (System.IO.File.Exists(filePath))
-                {
-                    var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
-                    return File(fileBytes, "application/octet-stream", document.FileName);
-                }
-
-                return NotFound(new { message = "File not found on server" });
-            }
-
-            // For external URLs, redirect
-            return Ok(new { downloadUrl = document.FileUrl });
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return Unauthorized(new { message = ex.Message });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error downloading document {DocumentId}", id);
-            return StatusCode(500, new { message = "Internal server error" });
-        }
-    }
-
     // POST: api/document/{id}/favorite
     [HttpPost("{id}/favorite")]
     public async Task<ActionResult<object>> ToggleFavorite(int id)
@@ -594,7 +530,7 @@ public class DocumentController : ControllerBase
             var userId = GetUserId();
 
             var document = await _context.GroupDocuments.FindAsync(id);
-            
+
             if (document == null)
                 return NotFound(new { message = "Document not found" });
 

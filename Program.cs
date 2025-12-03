@@ -29,6 +29,7 @@ builder.Services.AddScoped<IGroupManagementService, GroupManagementService>();
 builder.Services.AddScoped<IFileStorageService, FileStorageService>();
 builder.Services.AddSingleton<WebSocketHandler>();
 builder.Services.AddSingleton<ChatWebSocketHandler>();
+builder.Services.AddScoped<IFirebaseStorageService, FirebaseStorageService>();
 
 builder.Services.AddCors(options =>
 {
@@ -78,6 +79,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+builder.Services.AddHttpClient();
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
